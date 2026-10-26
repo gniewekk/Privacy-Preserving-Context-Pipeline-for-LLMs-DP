@@ -75,7 +75,7 @@ flowchart TD
     ResidencyGate -->|"dozwolone"| ExtLLM
 
     ExtLLM -->|"odpowiedź z tokenami"| OutboundPipeline
-    OutboundPipeline -->|"de-tokenizacja"| Vault
+    OutboundPipeline -->|"OutputPIIDetector: skan przed de-tokenizacją"| Vault
     Vault -->|"żądanie klucza"| KeyManagement
     Vault -->|"log de-tokenizacji"| AuditLog
     Vault -->|"przywrócone PII"| PipelineProxy
@@ -121,10 +121,18 @@ flowchart LR
     F5["🌍 ResidencyPolicy\nFilter"] --> F6
     F6["📋 AuditContext\nFilter"] --> OUT["📤 Wyjście\n(zanonimizowany tekst)"]
 
+    LLM["🤖 Odpowiedź LLM\n(z tokenami)"] --> OF1
+    OF1["🔍 OutputPIIDetector\nFilter"] --> OF2["🔐 ResponseRestorer\n(Memento + Vault)"]
+    OF2 --> OOUT["📤 Odpowiedź\n(po kontroli PII)"]
+
     style F2 fill:#fff3cd,stroke:#d4a017
     style F4 fill:#d0f0c0,stroke:#2d6a4f
     style F5 fill:#d6eaf8,stroke:#1a5276
+    style OF1 fill:#fff3cd,stroke:#d4a017
+    style OF2 fill:#ffd6a5,stroke:#e07a00
 ```
+
+Outbound Pipeline zawiera `OutputPIIDetector`, uruchamiany przed `ResponseRestorer`, de-tokenizacją oraz odwróceniem Memento. Filtr analizuje także odpowiedzi częściowe i może wykonać hard-stop, redakcję lub przekazać wynik do audytu, zanim jakakolwiek wartość zostanie przywrócona z Vault.
 
 **Kluczowe właściwości:**
 
@@ -187,6 +195,7 @@ classDiagram
     }
     class SynthesisStrategy {
         -syntheticDataGenerator: Generator
+        -mappingStore: VaultMemento
         +anonymize(value, entity) AnonymizationResult
         +canReverse() bool
     }
@@ -198,6 +207,7 @@ classDiagram
     AnonymizationStrategy <|.. GeneralizationStrategy
     AnonymizationStrategy <|.. SynthesisStrategy
     TokenizationStrategy --> TokenizationVault
+    SynthesisStrategy --> TokenizationVault
 ```
 
 | Strategia | Odwracalna | Zastosowanie | Przykład |
@@ -205,7 +215,9 @@ classDiagram
 | **Tokenizacja** | ✅ Tak | Pseudonimizacja wymagająca przywrócenia | `Jan Kowalski` → `<PERSON_1>` |
 | **Maskowanie** | ❌ Nie | Dane nieistotne dla kontekstu LLM | `90010112345` → `***********` |
 | **Generalizacja** | ❌ Nie | Quasi-identyfikatory, k-anonimowość | `wiek: 34, Sępólno Krajeńskie` → `wiek: 30–40, Polska` |
-| **Synteza** | ❌ Nie | Dane testowe, demonstracje | `Jan Kowalski` → `Anna Nowak` (syntetyczna) |
+| **Synteza** | ✅ Tak* | Opcjonalny fallback, gdy LLM odmawia placeholderów | `Jan Kowalski` → `Piotr Wiśniewski` (syntetyczna) |
+
+`SynthesisStrategy` jest opcjonalnym rozwiązaniem dla modeli, które odmawiają odpowiedzi po napotkaniu surowych tokenów typu `<PERSON_1>`. Zastępuje realne PII realistycznymi danymi syntetycznymi, zachowując strukturę i kontekst wypowiedzi. `Vault`/`Memento` utrzymuje dwukierunkowe mapowanie **syntetyk ↔ oryginał**, dzięki czemu odpowiedź może zostać bezpiecznie odtworzona dla uprawnionego odbiorcy; strategia nie przechowuje oryginału poza zaszyfrowanym Vaultem.
 
 ---
 
@@ -358,6 +370,7 @@ flowchart TD
         PIIDet["PIIDetector (reguły + NER ML)"]
         PHIDet["PHIDetector (HL7/FHIR aware)"]
         ReIdDet["ReIdRiskAnalyzer (k-anonimowość)"]
+        OutPIIDet["OutputPIIDetector"]
     end
 
     subgraph AnonLayer["Anonymization Layer"]
@@ -366,6 +379,7 @@ flowchart TD
         TokStrat["TokenizationStrategy"]
         MaskStrat["MaskingStrategy"]
         GenStrat["GeneralizationStrategy"]
+        SynStrat["SynthesisStrategy"]
     end
 
     subgraph VaultLayer["Vault Layer"]
@@ -383,6 +397,7 @@ flowchart TD
         ResPolicy["ResidencyPolicyEngine"]
         DataClass["DataClassifier"]
         RetPolicy["RetentionPolicyEngine"]
+        RetWorker["RetentionWorker (asynchroniczny purge)"]
     end
 
     subgraph AuditLayer["Audit Layer"]
@@ -397,12 +412,15 @@ flowchart TD
     AnonFilter --> StratSel
     StratSel --> TokStrat & MaskStrat & GenStrat
     TokStrat --> VProxy --> VCore --> TokenDB
+    SynStrat --> VProxy
     VCore --> KMS
     KeyRotation --> KMS
 
     InPipe --> ResPolicy
     ResPolicy --> DataClass
     RetPolicy --> TokenDB
+    RetPolicy --> RetWorker --> TokenDB
+    OutPipe --> OutPIIDet --> VProxy
 
     VProxy --> AuditWriter --> AuditLogDB
     AuditLogDB --> AlertingComp
@@ -414,9 +432,11 @@ flowchart TD
 |-----------|-----------------|---------|
 | `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami i Memento | Proxy, Facade |
 | `PIIDetector` | Wykrywa encje PII kombinując reguły regex (PESEL, NIP) + model NER | Filter |
+| `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
 | `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
 | `VaultProxy` | Enforce AuthN/AuthZ/RateLimit przed każdą operacją na Vault | Proxy |
 | `VaultCore` | Szyfruje/deszyfruje wartości PII, zarządza cyklem życia tokenów | — |
+| `RetentionWorker` | Asynchronicznie usuwa wygasłe rekordy tokenów po TTL sesji i audytuje wykonanie purge | Worker |
 | `ResidencyPolicyEngine` | Sprawdza, czy docelowy LLM jest w dozwolonej strefie geograficznej | Policy |
 | `ReIdRiskAnalyzer` | Oblicza ryzyko re-identyfikacji metodą k-anonimowości | Filter |
 | `PipelineBuilder` | Tworzy i waliduje konfigurację pipeline'u | Builder |
@@ -438,6 +458,7 @@ sequenceDiagram
     participant Vault as VaultProxy
     participant LLM as Zewnętrzny LLM
     participant OutPipe as Outbound Pipeline
+    participant OutputPII as OutputPIIDetector
 
     User->>Proxy: query("Jan Kowalski, PESEL 90010112345...")
     Proxy->>InPipe: process(context)
@@ -460,6 +481,8 @@ sequenceDiagram
     LLM-->>Proxy: "Sprawa PERSON_1 (PESEL_1) dotyczy faktury 7/2026..."
 
     Proxy->>OutPipe: restore(response, memento)
+    OutPipe->>OutputPII: scan(response)
+    OutputPII-->>OutPipe: brak nowego PII / tokeny do przywrócenia
     OutPipe->>Vault: deTokenize(PERSON_1, credentials)
     Vault-->>OutPipe: "Jan Kowalski"
     OutPipe->>Vault: deTokenize(PESEL_1, credentials)
@@ -470,6 +493,8 @@ sequenceDiagram
 
 **Wynik wysłany do LLM:** `"<PERSON_1>, <PESEL_1>, skarży się na fakturę 7/2026"`  
 **Wynik zwrócony użytkownikowi:** oryginalna treść z przywróconymi danymi.
+
+`OutputPIIDetector` działa przed de-tokenizacją i odwróceniem Memento. Wykrywa zarówno PII podchwycone z kontekstu, jak i nowe, zmyślone lub pochodzące z danych treningowych modelu (hallucination / training data leak). W przypadku wykrycia nieoczekiwanego PII odpowiedź jest blokowana albo kierowana do polityki redakcji i audytu; nie może zostać automatycznie wzbogacona o dane z Vault.
 
 ---
 
@@ -685,6 +710,9 @@ flowchart LR
     GDPR --> A3["Art. 25 - privacy by design"]
     GDPR --> A4["Art. 32 - bezpieczenstwo - AES-256"]
     GDPR --> A5["Art. 44-49 - transfer poza EOG - Residency Policy"]
+    A2 --> RetPolicy["RetentionPolicyEngine\n(TTL sesji, np. 24h)"]
+    RetPolicy --> RetWorker["RetentionWorker\n(asynchroniczny purge)"]
+    RetWorker --> TokenDB[("TokenDB:\nusunięcie rekordów tokenów")]
 
     EUAIA["EU AI Act (EU 2024/1689)"] --> B1["Art. 9 - zarzadzanie ryzykiem - ReIdRiskAnalyzer"]
     EUAIA --> B2["Art. 10 - jakosc danych - audyt detekcji"]
@@ -704,6 +732,8 @@ flowchart LR
 | Transfer poza EOG | `ResidencyPolicyEngine` |
 | Ocena ryzyka AI | `ReIdRiskAnalyzer` + dokumentacja modelu |
 | Transparentność | `AuditLog` (niemodyfikowalny) |
+
+**Cykl życia sesji i purge Vaulta:** przy utworzeniu sesji `RetentionPolicyEngine` wyznacza `expiresAt` dla każdego `TokenRecord` (domyślnie TTL 24h, konfigurowalny zgodnie z polityką organizacji). Asynchroniczny `RetentionWorker` cyklicznie pobiera rekordy, dla których `expiresAt < now()`, i wykonuje atomowe, nieodwracalne usunięcie zaszyfrowanych wartości oraz ich mapowań z `TokenDB` (`Purge`). Operacja jest idempotentna, monitorowana i audytowana bez zapisywania wartości PII. Mechanizm realizuje operacyjne usuwanie danych zgodnie z RODO art. 17; ewentualne wyjątki retencyjne (np. obowiązek prawny) muszą być jawnie oznaczone polityką i nie mogą rozszerzać domyślnego TTL.
 
 ---
 
@@ -852,6 +882,12 @@ providers:
 - **Decyzja:** k-anonimowość jest minimalnym progiem; dla danych medycznych wymagana ℓ-różnorodność.
 - **Konsekwencje:** Większa złożoność analizy ryzyka; konieczność utrzymania hierarchii generalizacji dla typowych atrybutów PL.
 
+### ADR-006: Streaming Proxy z buforowaniem placeholderów
+
+- **Kontekst:** LLM może zwracać odpowiedź strumieniowo przez Server-Sent Events (SSE), token po tokenie. Pełny placeholder, np. `<PERSON_1>`, może być podzielony między kilka zdarzeń SSE, a pełna odpowiedź nie powinna być buforowana ze względu na latencję i zużycie pamięci.
+- **Decyzja:** `Outbound Pipeline` implementuje `StreamingProxy`, który przekazuje zdarzenia SSE bez zmian, ale utrzymuje małe okno słowne/nawiasowe od znaku `<` do `>`. Po wykryciu kompletnego placeholdera przekazuje go do `OutputPIIDetector`, następnie bezpiecznie de-tokenizuje przez `Vault/Memento` i natychmiast emituje pełny ciąg do klienta. Tekst poza oknem jest emitowany od razu; brak zamknięcia `>` powoduje dalsze buforowanie wyłącznie tego fragmentu.
+- **Konsekwencje:** Zachowana zostaje płynność streamu i ograniczone zużycie pamięci, przy czym de-tokenizacja i kontrola PII odbywają się przed emisją wrażliwego fragmentu. Wykrycie nowego PII lub niepoprawnego placeholdera uruchamia hard-stop albo politykę redakcji, zamiast częściowego ujawnienia odpowiedzi.
+
 ---
 
 ## 8. Ryzyka i otwarte pytania
@@ -872,10 +908,10 @@ providers:
    Deterministyczna tokenizacja (ten sam input → ten sam token) umożliwia koreferencję (np. "Jan Kowalski" w różnych zdaniach → ten sam `<PERSON_1>`), ale jest podatna na ataki słownikowe. **Rekomendacja: deterministyczna per sesja, probabilistyczna cross-sesja.**
 
 2. **Jak obsłużyć zagnieżdżone PII w odpowiedzi LLM?**  
-   LLM może generować nowe PII (np. wymyślić dane). Outbound pipeline musi uruchomić detekcję na odpowiedzi. Wymaga dodatkowego filtru `OutboundPIIDetector`.
+   LLM może podchwycić PII z kontekstu albo wygenerować nowe, zmyślone lub pochodzące z danych treningowych (hallucination / training data leak). `OutputPIIDetector` w Outbound Pipeline musi skanować odpowiedź przed de-tokenizacją i odwróceniem Memento; w przypadku nowego PII odpowiedź wymaga blokady, redakcji lub dodatkowej zgody.
 
 3. **Co gdy LLM odmówi odpowiedzi na zanonimizowane dane?**  
-   Niektóre LLM mogą odmawiać odpowiedzi na teksty pełne placeholderów. Strategia fallback: synteza (zastąpienie syntetycznymi, ale realistycznie brzmiącymi danymi).
+   Niektóre LLM mogą odmawiać odpowiedzi na teksty pełne placeholderów. Opcjonalna `SynthesisStrategy` zastępuje realne PII realistycznymi danymi syntetycznymi (np. `Jan Kowalski` → `Piotr Wiśniewski`), a `Vault/Memento` utrzymuje dwukierunkowe mapowanie syntetyk ↔ oryginał. Należy ustalić, dla których modeli i klas danych strategia może być włączona oraz jak odróżniać syntetyczne dane od nowych PII w odpowiedzi.
 
 4. **Jak zarządzać hierarchiami generalizacji dla nowych języków/regionów?**  
    Hierarchie dla PL są gotowe. Dodanie obsługi DE lub UA wymaga nowych hierarchii geograficznych i zawodowych. Powinny być konfigurowalne zewnętrznie (YAML/JSON), nie hardcoded.
