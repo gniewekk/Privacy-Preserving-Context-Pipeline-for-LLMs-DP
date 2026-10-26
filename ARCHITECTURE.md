@@ -23,6 +23,7 @@
    - 5.4 [Re-identyfikacja — k-anonimowość](#54-re-identyfikacja--k-anonimowość)
    - 5.5 [Rotacja kluczy](#55-rotacja-kluczy)
    - 5.6 [Rozszerzenie — nowy detektor / strategia](#56-rozszerzenie)
+   - 5.7 [Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)](#57-anonymized-agentic-tool-calling-scenariusz-odpytania-bazy-danych)
 6. [Model bezpieczeństwa](#6-model-bezpieczeństwa)
    - 6.1 [Wykrywanie PII/PHI](#61-wykrywanie-piiphi)
    - 6.2 [GDPR i EU AI Act](#62-gdpr-i-eu-ai-act)
@@ -322,6 +323,12 @@ Memento służy dwóm celom:
 
 Przy przerwaniu sesji (np. timeout LLM) system może odtworzyć stan z Memento i wznowić od momentu wysłania do LLM, bez ponownej anonimizacji (która byłaby niedeterministyczna przy tokenach sekwencyjnych).
 
+#### C. Dynamic Memento Expansion w sesji agentowej
+
+W sesji agentowej `PipelineMemento` jest rozszerzalny i może atomowo dopisywać nowe tokeny powstałe podczas wykonywania narzędzi. Gdy `ToolExecutionMiddleware` pobierze z Vault wartość potrzebną do zapytania (np. `Jan Kowalski`), wynik z bazy danych jest natychmiast tokenizowany w Vault/Memento (np. `1990-01-01` → `<DATE_1>`), a wpis `<DATE_1>` zostaje dodany do istniejącego `tokenMap` tej samej sesji. Memento nie ujawnia wartości jawnej ani LLM, ani komponentom przechowującym snapshot.
+
+Rozszerzenie jest wersjonowane i wykonywane przed zwróceniem wyniku narzędzia do LLM, dzięki czemu `ResponseRestorer` korzystający z końcowego snapshotu przywraca zarówno tokeny pierwotnego promptu (`<PERSON_1>`), jak i tokeny wygenerowane dynamicznie przez narzędzie (`<DATE_1>`). Operacja wymaga kontroli integralności, zgodności `sessionId` oraz audytu tak jak początkowa anonimizacja.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Processing : wejście użytkownika
@@ -339,13 +346,14 @@ stateDiagram-v2
 PipelineMemento {
     sessionId:      UUID
     tokenMap:       Map<Token, EntityMetadata>   // NIE zawiera oryginalnych wartości
+    version:        int                           // wersja po każdym rozszerzeniu
     appliedFilters: List<FilterRecord>
     timestamp:      Instant
     checksum:       bytes   // integralność snapshotu
 }
 ```
 
-> **Ważne:** Memento **nigdy nie przechowuje oryginalnych wartości PII** — tylko tokeny i metadane. Oryginalne wartości żyją wyłącznie w Vault (zaszyfrowane).
+> **Ważne:** Memento **nigdy nie przechowuje oryginalnych wartości PII** — tylko tokeny i metadane. Oryginalne wartości żyją wyłącznie w Vault (zaszyfrowane), również dla tokenów dodanych dynamicznie podczas wywołania narzędzia.
 
 ---
 
@@ -430,7 +438,8 @@ flowchart TD
 
 | Komponent | Odpowiedzialność | Wzorzec |
 |-----------|-----------------|---------|
-| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami i Memento | Proxy, Facade |
+| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst i obiekty `ToolCall` / `FunctionCall` JSON | Proxy, Facade |
+| `Inbound Pipeline` | Przetwarza `RawInput` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
 | `PIIDetector` | Wykrywa encje PII kombinując reguły regex (PESEL, NIP) + model NER | Filter |
 | `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
 | `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
@@ -441,6 +450,17 @@ flowchart TD
 | `ReIdRiskAnalyzer` | Oblicza ryzyko re-identyfikacji metodą k-anonimowości | Filter |
 | `PipelineBuilder` | Tworzy i waliduje konfigurację pipeline'u | Builder |
 | `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
+
+`PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`. Dla obiektu `ToolCall` / `FunctionCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
+
+```
+ToolCall {
+    id:        UUID
+    name:      string
+    arguments: JSON          // wartości PII zastąpione tokenami
+    sessionId: UUID
+}
+```
 
 ---
 
@@ -677,6 +697,52 @@ class PolishIBANDetector(PIIDetector):
         ]
 ```
 
+### 5.7 Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)
+
+**Scenariusz:** Użytkownik pyta: `"Kiedy urodził się Jan Kowalski?"`. Agent LLM nie ma bezpośredniego dostępu do bazy danych ani danych jawnych. `Inbound Pipeline` tokenizuje PII, a middleware przechwytuje każde wywołanie narzędzia przed jego wykonaniem.
+
+```mermaid
+sequenceDiagram
+    participant User as Użytkownik
+    participant Middleware as Middleware / PipelineProxy
+    participant InPipe as Inbound Pipeline
+    participant Vault as Vault / Memento
+    participant LLM as LLM (bez dostępu do DB)
+    participant ToolMW as ToolExecutionMiddleware
+    participant DB as Baza danych
+    participant OutPipe as Outbound Pipeline
+
+    User->>Middleware: "Kiedy urodził się Jan Kowalski?"
+    Middleware->>InPipe: process(text)
+    InPipe->>Vault: tokenize("Jan Kowalski", PERSON)
+    Vault-->>InPipe: "<PERSON_1>"
+    InPipe->>Vault: create/extend Memento(sessionId, <PERSON_1>)
+    InPipe-->>Middleware: prompt + Tool definitions
+    Middleware->>LLM: zanonimizowany prompt + get_birth_date(...)
+    LLM-->>Middleware: ToolCall {name: get_birth_date,\narguments: {user_id: "<PERSON_1>"}}
+
+    Middleware->>ToolMW: intercept(ToolCall)
+    ToolMW->>Vault: deTokenize("<PERSON_1>", session credentials)
+    Vault-->>ToolMW: "Jan Kowalski"
+    ToolMW->>DB: get_birth_date(user_id="Jan Kowalski")
+    DB-->>ToolMW: "1990-01-01"
+    ToolMW->>Vault: tokenize("1990-01-01", DATE)
+    Vault-->>ToolMW: "<DATE_1>"
+    ToolMW->>Vault: extend Memento(+ <DATE_1>)
+    ToolMW-->>LLM: tool result {birth_date: "<DATE_1>"}
+
+    LLM-->>Middleware: "<PERSON_1> urodził się <DATE_1>"
+    Middleware->>OutPipe: restore(response, expanded Memento)
+    OutPipe->>Vault: deTokenize("<PERSON_1>", credentials)
+    Vault-->>OutPipe: "Jan Kowalski"
+    OutPipe->>Vault: deTokenize("<DATE_1>", credentials)
+    Vault-->>OutPipe: "1990-01-01"
+    OutPipe-->>Middleware: "Jan Kowalski urodził się 1990-01-01"
+    Middleware-->>User: pełna odpowiedź
+```
+
+W żadnym momencie LLM nie otrzymuje jawnego identyfikatora osoby, daty urodzenia ani bezpośredniego połączenia z bazą. Wynik narzędzia jest anonimizowany natychmiast po odczycie, a dynamicznie rozszerzone Memento umożliwia atomową de-tokenizację obu tokenów dopiero w `Outbound Pipeline`, po kontroli uprawnień i audycie.
+
 ---
 
 ## 6. Model bezpieczeństwa
@@ -887,3 +953,10 @@ providers:
 - **Kontekst:** LLM może zwracać odpowiedź strumieniowo przez Server-Sent Events (SSE), token po tokenie. Pełny placeholder, np. `<PERSON_1>`, może być podzielony między kilka zdarzeń SSE, a pełna odpowiedź nie powinna być buforowana ze względu na latencję i zużycie pamięci.
 - **Decyzja:** `Outbound Pipeline` implementuje `StreamingProxy`, który przekazuje zdarzenia SSE bez zmian, ale utrzymuje małe okno słowne/nawiasowe od znaku `<` do `>`. Po wykryciu kompletnego placeholdera przekazuje go do `OutputPIIDetector`, następnie bezpiecznie de-tokenizuje przez `Vault/Memento` i natychmiast emituje pełny ciąg do klienta. Tekst poza oknem jest emitowany od razu; brak zamknięcia `>` powoduje dalsze buforowanie wyłącznie tego fragmentu.
 - **Konsekwencje:** Zachowana zostaje płynność streamu i ograniczone zużycie pamięci, przy czym de-tokenizacja i kontrola PII odbywają się przed emisją wrażliwego fragmentu. Wykrycie nowego PII lub niepoprawnego placeholdera uruchamia hard-stop albo politykę redakcji, zamiast częściowego ujawnienia odpowiedzi.
+
+### ADR-007: Anonymized Tool Calling Execution
+
+- **Kontekst:** Agent LLM powinien odpowiadać na pytania wymagające danych z bazy, ale nie może otrzymać bezpośredniego dostępu do bazy ani jawnych danych osobowych. Wywołania funkcji LLM są ustrukturyzowanymi obiektami i muszą podlegać tej samej izolacji co tekstowy prompt.
+- **Decyzja:** Middleware przechwytuje każde `ToolCall` / `FunctionCall` przed egzekucją, de-tokenizuje wyłącznie wymagane argumenty w Vault, wykonuje zapytanie przez kontrolowany adapter DB, a wynik tokenizuje natychmiast przed zwróceniem go do LLM. Nowe tokeny są dopisywane do Memento bieżącej sesji, a `Outbound Pipeline` wykonuje dwukierunkową kontrolę i de-tokenizację dopiero dla uprawnionego odbiorcy.
+- **Uzasadnienie:** Dwukierunkowa tokenizacja izoluje agenta od danych jawnych i ogranicza zakres ujawnienia do minimalnego, audytowanego wywołania. Rozwiązanie wspiera privacy by design, zasadę minimalizacji danych RODO oraz kontrolę ryzyka systemu agentowego zgodnie z EU AI Act.
+- **Konsekwencje:** Wzrasta latencja i złożoność orkiestracji (przechwycenie call, Vault, DB, tokenizacja wyniku), a każda operacja wymaga spójności `sessionId`, autoryzacji i audytu. W zamian LLM nie może samodzielnie odpytywać bazy, a jawne dane opuszczają zaufaną granicę wyłącznie w kontrolowanym middleware.
