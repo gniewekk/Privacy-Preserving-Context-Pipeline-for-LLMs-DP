@@ -654,47 +654,6 @@ flowchart TD
 
 ---
 
-### 5.6 Rozszerzenie
-
-**Przykład:** Dodanie detektora polskiego numeru IBAN.
-
-**Zmiana wymagana:** tylko nowe implementacje, **żadna modyfikacja istniejącego kodu** (zasada Open/Closed Principle — spełniona przez Pipes & Filters + Strategy).
-
-```mermaid
-flowchart LR
-    NewDetector["Nowa klasa: PolishIBANDetector\nimplementuje: PIIDetector"] --> Registry
-    NewStrategy["Nowa klasa: IBANMaskingStrategy\nimplementuje: AnonymizationStrategy"] --> Registry
-    Registry["DetectorRegistry / StrategyRegistry\n(rejestracja przez @Register lub konfigurację)"] --> Builder2
-    Builder2["PipelineBuilder (bez zmian!)"] --> Pipeline2["Pipeline (z nowym detektorem)"]
-```
-
-**Kontrakt dla nowego detektora:**
-
-```python
-interface PIIDetector:
-    entityType()         -> EntityType     # np. EntityType.IBAN
-    supportedLanguages() -> List[Lang]
-    detect(text, lang)   -> List[DetectedEntity]
-    confidence()         -> float          # próg pewności
-```
-
-**Przykład implementacji:**
-
-```python
-@register_detector(entity_type=EntityType.IBAN, priority=100)
-class PolishIBANDetector(PIIDetector):
-    IBAN_PATTERN = re.compile(
-        r'PL\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}'
-    )
-
-    def detect(self, text: str, lang: Lang) -> list[DetectedEntity]:
-        return [
-            DetectedEntity(
-                value=m.group(), type=EntityType.IBAN,
-                start=m.start(), end=m.end()
-            )
-            for m in self.IBAN_PATTERN.finditer(text)
-        ]
 ```
 
 ### 5.7 Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)
