@@ -43,6 +43,14 @@ class HeuristicPolishNERDetector:
                     end=match.end(),
                 )
             )
+        # Labelled name fields may be followed by punctuation or prose; scan
+        # the value itself so labels such as "Kontakt:" don't hide the name.
+        for match in re.finditer(r"(?i)\b(?:kontakt|imię i nazwisko|osoba)\s*[:#-]\s*([^,.;]+)", text):
+            value = match.group(1).strip()
+            name = self._name_pair.fullmatch(value)
+            if name and name.group(1) not in self._excluded and name.group(2) not in self._excluded:
+                start = match.start(1) + len(match.group(1)) - len(match.group(1).lstrip())
+                entities.append(DetectedEntity("PERSON", value, start, start + len(value)))
         return entities
 
 
@@ -87,12 +95,20 @@ class TransformerNERDetector:
         for result in results:
             score = float(result.get("score", 0.0))
             label = str(result.get("entity_group", result.get("entity", ""))).upper()
-            if score < self.min_score or "PER" not in label:
+            if score < self.min_score:
+                continue
+            if "PER" in label:
+                entity_type = "PERSON"
+            elif "ORG" in label:
+                entity_type = "ORGANIZATION"
+            elif "LOC" in label or "GPE" in label:
+                entity_type = "LOCATION"
+            else:
                 continue
             start = int(result["start"])
             end = int(result["end"])
             entities.append(
-                DetectedEntity("PERSON", text[start:end], start, end)
+                DetectedEntity(entity_type, text[start:end], start, end)
             )
         return entities
 
@@ -111,6 +127,8 @@ class PIIRegistry:
         return decorator
 
     _patterns = (
+        ("ADDRESS", re.compile(r"(?i)(?<!\w)(?:ul(?:ica)?\.?|al(?:eja)?\.?|pl(?:ac)?\.?)\s+[\wąćęłńóśźż-]+(?:\s+[\wąćęłńóśźż-]+)*\s+\d+[A-Za-z]?(?:/\d+)?(?:,?\s+\d{2}-\d{3}\s+[\wąćęłńóśźż-]+(?:\s+[\wąćęłńóśźż-]+)*)?")),
+        ("ORGANIZATION", re.compile(r"(?<!\w)[A-ZĄĆĘŁŃÓŚŹŻ][\w&.-]*\s+(?i:sp\.?\s*z\s*o\.?\s*o\.?|s\.?a\.?|s\.?c\.?|llc|ltd\.?|inc\.?|gmbh|fundacja|stowarzyszenie)")),
         ("EMAIL", re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+\.[A-Za-z]{2,}(?!\w)")),
         (
             "PHONE",
@@ -144,6 +162,8 @@ class PIIRegistry:
         for entity_type, pattern in cls._context_patterns:
             for match in pattern.finditer(text):
                 value = match.group(1).strip()
+                if not value:
+                    continue
                 start, end = match.start(1), match.end(1)
                 entities.append(DetectedEntity(entity_type, value, start, end))
         for entity_type, (_, detector_cls) in sorted(
@@ -151,8 +171,9 @@ class PIIRegistry:
         ):
             detector = detector_cls()
             entities.extend(detector.detect(text))
-        if ner_detector is not None:
-            entities.extend(ner_detector.detect(text))
+        if ner_detector is None:
+            ner_detector = HeuristicPolishNERDetector()
+        entities.extend(ner_detector.detect(text))
         return cls._remove_overlaps(entities)
 
     @staticmethod

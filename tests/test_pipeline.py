@@ -92,6 +92,21 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("01.02.1990", context.text)
         self.assertEqual(restored, original)
 
+    def test_contact_prefix_does_not_hide_following_person_name(self) -> None:
+        entities = PIIRegistry.detect("Kontakt: Anna Nowak, proszę oddzwonić")
+        self.assertIn(("PERSON", "Anna Nowak"), [(e.entity_type, e.value) for e in entities])
+
+    def test_detects_polish_street_address_with_postal_code(self) -> None:
+        text = "Proszę wysłać list na ul. Długa 5, 00-001 Warszawa."
+        entities = PIIRegistry.detect(text)
+        addresses = [e for e in entities if e.entity_type == "ADDRESS"]
+        self.assertTrue(addresses)
+        self.assertEqual(text[addresses[0].start:addresses[0].end], "ul. Długa 5, 00-001 Warszawa")
+
+    def test_detects_organization_with_legal_suffix(self) -> None:
+        entities = PIIRegistry.detect("Umowę podpisała Acme Sp. z o.o.")
+        self.assertIn(("ORGANIZATION", "Acme Sp. z o.o."), [(e.entity_type, e.value) for e in entities])
+
     def test_registered_detector_is_used_for_custom_entity_type(self) -> None:
         @PIIRegistry.register_detector("CUSTOM_ID", priority=10)
         class CustomIDDetector:
@@ -136,7 +151,8 @@ class PipelineTests(unittest.TestCase):
     def test_builder_registers_residency_and_risk_policies(self) -> None:
         pipeline = (
             PipelineBuilder()
-            .forDataClass("MEDICAL")
+            .forDataClass("PERSONAL")
+            .withAuditLevel("FULL")
             .withResidencyPolicy("EU_ONLY")
             .withReIdRiskThreshold(0.2)
             .with_anonymization()

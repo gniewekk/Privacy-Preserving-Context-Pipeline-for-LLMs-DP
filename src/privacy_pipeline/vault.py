@@ -68,3 +68,20 @@ class InMemoryTokenVault:
 
     def record(self, session_id: str, token: str) -> TokenRecord:
         return self._records[(session_id, token)]
+
+    def extend_memento(self, memento, value: str, entity_type: str):
+        """Tokenize a tool result and atomically extend its session snapshot."""
+        from .models import EntityMetadata, PipelineMemento
+
+        if not isinstance(memento, PipelineMemento):
+            raise TypeError("memento must be a PipelineMemento")
+        with self._lock:
+            token = self.tokenize(memento.session_id, value, entity_type)
+            extended = memento.extend(token, EntityMetadata(entity_type, 0, len(value)))
+            record = self._records[(memento.session_id, token)]
+        return extended
+
+    def extend_memento_with_token(self, memento, value: str, entity_type: str):
+        extended = self.extend_memento(memento, value, entity_type)
+        token = next(token for token in extended.token_map if token not in memento.token_map)
+        return extended, token
