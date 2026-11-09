@@ -4,6 +4,9 @@ from privacy_pipeline.pipeline import PipelineBuilder
 
 
 class BuilderConfigurationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        print(f"\n[TEST] {self.id()}")
+
     def test_requires_anonymization_to_build_pipeline(self) -> None:
         with self.assertRaisesRegex(ValueError, "AnonymizationFilter"):
             PipelineBuilder().build()

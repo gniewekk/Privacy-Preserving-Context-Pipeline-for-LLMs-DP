@@ -654,9 +654,7 @@ flowchart TD
 
 ---
 
-```
-
-### 5.7 Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)
+### 5.6 Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)
 
 **Scenariusz:** Użytkownik pyta: `"Kiedy urodził się Jan Kowalski?"`. Agent LLM nie ma bezpośredniego dostępu do bazy danych ani danych jawnych. `Inbound Pipeline` tokenizuje PII, a middleware przechwytuje każde wywołanie narzędzia przed jego wykonaniem.
 

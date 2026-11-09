@@ -15,6 +15,9 @@ from privacy_pipeline.pipeline import OutboundPipeline, ResponseRestorer
 
 
 class ReliabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        print(f"\n[TEST] {self.id()}")
+
     def test_outbound_pipeline_scans_before_restoring(self) -> None:
         vault = InMemoryTokenVault()
         pipeline = PipelineBuilder(vault).with_anonymization().build()

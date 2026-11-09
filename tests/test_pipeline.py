@@ -15,6 +15,7 @@ from privacy_pipeline import (
 
 class PipelineTests(unittest.TestCase):
     def setUp(self) -> None:
+        print(f"\n[TEST] {self.id()}")
         vault = InMemoryTokenVault()
         pipeline = PipelineBuilder(vault).with_anonymization().build()
         self.proxy = PipelineProxy(pipeline)

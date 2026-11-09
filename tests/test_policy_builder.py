@@ -4,6 +4,9 @@ from privacy_pipeline.pipeline import PipelineBuilder
 
 
 class BuilderPolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        print(f"\n[TEST] {self.id()}")
+
     def test_rejects_medical_data_class_in_non_medical_scope(self) -> None:
         with self.assertRaisesRegex(ValueError, "Medical data support is out of scope"):
             PipelineBuilder().forDataClass("MEDICAL").with_anonymization().build()

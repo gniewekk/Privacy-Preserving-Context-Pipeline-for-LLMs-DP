@@ -4,6 +4,9 @@ from privacy_pipeline import PipelineContext
 
 
 class ImmutableContextTests(unittest.TestCase):
+    def setUp(self) -> None:
+        print(f"\n[TEST] {self.id()}")
+
     def test_context_metadata_is_read_only(self) -> None:
         context = PipelineContext("immutable", "safe", metadata={"region": "EU"})
         with self.assertRaises(TypeError):
