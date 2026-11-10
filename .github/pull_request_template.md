@@ -2,7 +2,6 @@
 
 <!-- Briefly describe the purpose of this PR and which milestone/scenario it addresses -->
 
-- **Milestone:** [ ] M1 (Week 2) | [ ] M2 (Week 4) | [ ] M3 (Week 6 - Hidden Change Request) | [ ] M4 (Week 8)
 - **Linked ADR(s):** `ADR-00X` (`docs/adr/00X-...`)
 - **Design Pattern(s) Affected:**
   - [ ] Pipes & Filters (`src/pipeline/`)
@@ -31,24 +30,3 @@
   - <!-- Detail any OCP violations fixed, leaky abstractions sealed, type narrowing corrections, or security hardening performed manually -->
 
 ---
-
-## OCP & Week-6 Extensibility Check
-
-- [ ] **Zero Concrete Branching in Filters:** No `if/elif/else` or `match/case` statements in `src/pipeline/` check concrete `PIIDetector` classes, `AnonymizationStrategy` classes, entity type strings, or LLM provider names.
-- [ ] **Interface-Only Coupling:** All dependencies (`VaultProtocol`, `PIIDetector`, `AnonymizationStrategy`, `ResidencyPolicy`, `LLMDispatcher`, `AuditLogger`) are injected via abstract `Protocol` or `ABC` interfaces.
-- [ ] **Immutability Preserved:** `PipelineContext`, `AnonymizationMemento`, and domain event models use `ConfigDict(frozen=True, extra="forbid")` with zero in-place mutation.
-- [ ] **Encapsulation Boundary Intact:** `TokenVault` is never accessed or instantiated directly outside `VaultProtectionProxy` (`src/vault/proxy.py`).
-
----
-
-## Security & Quality Gate Checklist
-
-- [ ] **Positive & Negative/Abuse Tests Added:** Both happy-path unit tests and adversarial security tests (unauthorized caller, cross-tenant replay, residency violation, expired key/token, tampered ciphertext/AAD) are included and passing (`pytest -v`).
-- [ ] **Zero Raw PII/PHI in Logs or Exceptions:** Verified via test assertions that no plaintext PII/PHI values or cryptographic keys appear in `logging` output, `AuditEvent` records, `__repr__()`/`__str__()`, or exception messages.
-- [ ] **No Hardcoded Secrets or Jurisdictions:** Zero API keys, AES keys, or hardcoded region strings committed to source or test files.
-- [ ] **All Automated Quality & SAST Gates Passing:**
-  - [ ] `pytest -v`
-  - [ ] `mypy --strict src/`
-  - [ ] `ruff check src/ tests/`
-  - [ ] `bandit -r src/`
-  - [ ] `pip-audit`
