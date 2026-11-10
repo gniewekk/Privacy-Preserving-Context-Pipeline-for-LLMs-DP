@@ -905,62 +905,16 @@ providers:
 
 ## 7. Decyzje architektoniczne (ADR)
 
-### ADR-001: Tokenizacja jako domyślna strategia dla PII odwracalnego
+Pełne rekordy decyzji architektonicznych (zawierające sekcje *Context & Problem*, *Decision*, *Rejected Alternatives*, *Trade-offs & Consequences* oraz *Compliance with Scenarios*) znajdują się w dedykowanym katalogu [`docs/adr/`](docs/adr/README.md):
 
-- **Kontekst:** Musimy móc przywrócić oryginalne dane dla uprawnionych użytkowników.
-- **Decyzja:** Domyślna strategia dla danych wymagających przywrócenia to tokenizacja z Vault.
-- **Alternatywy:** Szyfrowanie deterministyczne (ryzyko: podatne na frequency analysis); maskowanie (nieodwracalne).
-- **Konsekwencje:** Vault staje się single point of failure — wymaga replikacji HA.
-
-### ADR-002: Vault jako Proxy, nie wbudowany w Pipeline
-
-- **Kontekst:** Pipeline i Vault mają różne cykle życia, wymagania bezpieczeństwa i skalowalności.
-- **Decyzja:** Vault to oddzielna usługa z VaultProxy jako fasadą dla pipeline'u.
-- **Alternatywy:** Vault jako część pipeline'u (monolit) — prostszy deployment, ale gorsze separation of concerns.
-- **Konsekwencje:** Latencja sieciowa przy tokenizacji/de-tokenizacji. Mitygacja: batching i lokalne cache tokenów (TTL 60s, tylko w pamięci).
-
-### ADR-003: Memento nie przechowuje oryginalnych wartości PII
-
-- **Kontekst:** Memento musi być bezpiecznie przesyłalne między komponentami.
-- **Decyzja:** Memento zawiera tylko tokeny i metadane, nigdy oryginalne wartości.
-- **Konsekwencje:** De-tokenizacja zawsze wymaga wywołania Vault (brak skrótu). Akceptowalne ze względów bezpieczeństwa.
-
-### ADR-004: Hard-stop dla naruszeń residency
-
-- **Kontekst:** Dane medyczne wysyłane poza EU to naruszenie GDPR art. 44.
-- **Decyzja:** Naruszenie residency powoduje twardy błąd (HTTP 451) i audyt, nie ostrzeżenie.
-- **Alternatywy:** Soft-warning z możliwością override — zbyt ryzykowne dla PHI.
-- **Konsekwencje:** Degradacja dostępności gdy jedyny dostępny LLM jest poza EU. Mitygacja: fallback do EU LLM.
-
-### ADR-005: k-anonimowość jako próg, nie gwarancja
-
-- **Kontekst:** k-anonimowość może być niewystarczająca (atak jednorodności).
-- **Decyzja:** k-anonimowość jest minimalnym progiem; dla danych medycznych wymagana ℓ-różnorodność.
-- **Konsekwencje:** Większa złożoność analizy ryzyka; konieczność utrzymania hierarchii generalizacji dla typowych atrybutów PL.
-
-### ADR-006: Streaming Proxy z buforowaniem placeholderów
-
-- **Kontekst:** LLM może zwracać odpowiedź strumieniowo przez Server-Sent Events (SSE), token po tokenie. Pełny placeholder, np. `<PERSON_1>`, może być podzielony między kilka zdarzeń SSE, a pełna odpowiedź nie powinna być buforowana ze względu na latencję i zużycie pamięci.
-- **Decyzja:** `Outbound Pipeline` implementuje `StreamingProxy`, który przekazuje zdarzenia SSE bez zmian, ale utrzymuje małe okno słowne/nawiasowe od znaku `<` do `>`. Po wykryciu kompletnego placeholdera przekazuje go do `OutputPIIDetector`, następnie bezpiecznie de-tokenizuje przez `Vault/Memento` i natychmiast emituje pełny ciąg do klienta. Tekst poza oknem jest emitowany od razu; brak zamknięcia `>` powoduje dalsze buforowanie wyłącznie tego fragmentu.
-- **Konsekwencje:** Zachowana zostaje płynność streamu i ograniczone zużycie pamięci, przy czym de-tokenizacja i kontrola PII odbywają się przed emisją wrażliwego fragmentu. Wykrycie nowego PII lub niepoprawnego placeholdera uruchamia hard-stop albo politykę redakcji, zamiast częściowego ujawnienia odpowiedzi.
-
-### ADR-007: Anonymized Tool Calling Execution
-
-- **Kontekst:** Agent LLM powinien odpowiadać na pytania wymagające danych z bazy, ale nie może otrzymać bezpośredniego dostępu do bazy ani jawnych danych osobowych. Wywołania funkcji LLM są ustrukturyzowanymi obiektami i muszą podlegać tej samej izolacji co tekstowy prompt.
-- **Decyzja:** Middleware przechwytuje każde `ToolCall` / `FunctionCall` przed egzekucją, de-tokenizuje wyłącznie wymagane argumenty w Vault, wykonuje zapytanie przez kontrolowany adapter DB, a wynik tokenizuje natychmiast przed zwróceniem go do LLM. Nowe tokeny są dopisywane do Memento bieżącej sesji, a `Outbound Pipeline` wykonuje dwukierunkową kontrolę i de-tokenizację dopiero dla uprawnionego odbiorcy.
-- **Uzasadnienie:** Dwukierunkowa tokenizacja izoluje agenta od danych jawnych i ogranicza zakres ujawnienia do minimalnego, audytowanego wywołania. Rozwiązanie wspiera privacy by design, zasadę minimalizacji danych RODO oraz kontrolę ryzyka systemu agentowego zgodnie z EU AI Act.
-- **Konsekwencje:** Wzrasta latencja i złożoność orkiestracji (przechwycenie call, Vault, DB, tokenizacja wyniku), a każda operacja wymaga spójności `sessionId`, autoryzacji i audytu. W zamian LLM nie może samodzielnie odpytywać bazy, a jawne dane opuszczają zaufaną granicę wyłącznie w kontrolowanym middleware.
-
-### ADR-008: Hybrydowa detekcja nieustrukturyzowanego PII (Ensemble NER + Context Enhancers)
-
-- **Kontekst:** Reguły deterministyczne (regex + suma kontrolna) wykrywają wyłącznie dane o stałym formacie (PESEL, NIP, IBAN). Z kolei standardowe modele Transformer NER wykazują spadek czułości (*capitalization bias*) dla danych pisanych małymi literami (np. `"jan kowalski"`), z błędami lub odmienionych przez przypadki w języku polskim.
-- **Decyzja:** `PIIDetector` jest realizowany jako kompozyt (`CompositePIIDetector`) łączący: (1) deterministyczne walidatory regex/checksum, (2) model Transformer NER (np. Zero-Shot `GLiNER` lub `HerBERT` z *lowercasing augmentation*), oraz (3) warstwę `ContextRuleEnhancer` + słowniki pomocnicze (Gazetteers), które podnoszą `confidence score` wykryć w obecności słów kluczowych i znanych imion/miejscowości.
-- **Alternatywy:** Wyłącznie regex (wysoki odsetek *False Negative* dla nazw własnych) lub pojedynczy model NER bez reguł kontekstowych (podatność na brak wielkich liter).
-- **Konsekwencje:** Wyższe zapotrzebowanie na zasoby obliczeniowe (CPU/GPU) dla warstwy NER w zamian za wysoką czułość (recall) na nieformalnym tekście polskojęzycznym. Zależności ML (`torch`, `transformers`) są izolowane jako opcjonalna grupa w konfiguracji projektu.
-
-### ADR-009: Obsługa dokumentów PDF w modelu Extract-Then-Anonymize (Fail-Closed dla binariów)
-
-- **Kontekst:** Użytkownicy mogą przekazywać do agenta dokumenty PDF zawierające dane wrażliwe (np. faktury, dokumentację medyczną). Przesłanie surowego pliku binarnego PDF do zewnętrznego LLM ujawnia metadane XMP/Info, ukryte warstwy tekstowe oraz tekst widoczny na osadzonych obrazach/skanach.
-- **Decyzja:** Surowe pliki PDF nigdy nie są przekazywane do LLM. Na początku `Inbound Pipeline` filtr `DocumentExtractorFilter` ekstrahuje czystą warstwę tekstową, bezwarunkowo odrzuca metadane pliku i przekazuje tekst do standardowego łańcucha `PIIDetector` → `AnonymizationFilter`. Jeśli dokument PDF jest skanem (brak warstwy tekstowej) lub zawiera osadzone obrazy, a lokalny moduł OCR nie jest aktywny, pipeline przerywa przetwarzanie (`HardStop: UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII`) i zapisuje zdarzenie w `AuditLog`.
-- **Alternatywy:** Całkowite odrzucanie wszystkich plików PDF (zbyt restrykcyjne funkcjonalnie) lub bezpośrednie przesyłanie PDF do multimodalnego LLM (krytyczne naruszenie Privacy by Design).
-- **Konsekwencje:** Utrata oryginalnego formatowania wizualnego dokumentu na rzecz czystego tekstu/Markdown przekazywanego do LLM, przy pełnej gwarancji, że żadne nieprzeskanowane warstwy binarne ani metadane nie opuszczą zaufanej strefy.
+| ID | Tytuł decyzji | Główny wzorzec / mechanizm | Status | Kluczowe uzasadnienie i kompromisy |
+| :--- | :--- | :--- | :--- | :--- |
+| **[ADR-001](docs/adr/001-pipes-and-filters-pipeline.md)** | Synchronous Prompt/Response Sanitization via Pipes & Filters | **Pipes & Filters** | Accepted | Bezstanowe filtry nad niemutowalnym `PipelineContext` zapewniają bezpieczeństwo wątkowe i deterministyczny *fail-closed short-circuiting* (np. `ResidencyGate`). |
+| **[ADR-002](docs/adr/002-strategy-pattern-detectors-and-anonymizers.md)** | Pluggable PII Detectors and Anonymization Algorithms via Strategy Pattern | **Strategy** | Accepted | Pełna zgodność z zasadą Open-Closed (OCP): dodanie nowego detektora (np. polski IBAN) lub strategii (maskowanie, tokenizacja, $k$-anonimowość) wymaga zero zmian w klasach `src/pipeline/`. |
+| **[ADR-003](docs/adr/003-pipeline-builder.md)** | Composing Multi-Stage Compliance Pipelines via Fluent Builder | **Builder** | Accepted | Walidacja niezmienników na etapie `.build()` (obecność detektora, powiązanie strategii odwracalnych z `VaultProtectionProxy` i `Caretaker`, wymuszenie kanonicznej kolejności filtrów). |
+| **[ADR-004](docs/adr/004-protection-proxy-token-vault.md)** | Access-Controlled Cryptographic Token Vault via Protection Proxy | **Protection Proxy** | Accepted | `VaultProtectionProxy` izoluje pakietowo prywatny `TokenVault` (AES-256-GCM + AAD), wymuszając kontrolę RBAC/tenant oraz niezmienny zapis do `AuditLogger` przy każdej próbie dostępu (`GRANTED` i `DENIED`). |
+| **[ADR-005](docs/adr/005-memento-state-restoration.md)** | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | `AnonymizationMemento` przechowuje wyłącznie hermetyzowane wskaźniki `placeholder -> token_id` oraz wersję klucza (zero jawnego PII poza Vaultem); odtworzenie odpowiedzi zawsze przechodzi przez autoryzację w Proxy. |
+| **[ADR-006](docs/adr/006-streaming-proxy-placeholder-buffering.md)** | Streaming Response Detokenization via Placeholder Window Buffering | **Pipes & Filters (Streaming)** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE pozwala atomowo de-tokenizować placeholdery podzielone między chunkami i skanować wyjście przez `OutputPIIDetector` bez buforowania całej odpowiedzi. |
+| **[ADR-007](docs/adr/007-anonymized-agentic-tool-calling.md)** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie `ToolCall` w middleware, de-tokenizacja argumentów zapytania do DB wewnątrz zaufanej granicy, natychmiastowa tokenizacja wyniku narzędzia i wersjonowane rozszerzenie `AnonymizationMemento`. |
+| **[ADR-008](docs/adr/008-hybrid-ner-and-context-enhancers.md)** | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy + Composite** | Accepted | Połączenie walidatorów regex/checksum, reguł kontekstowych (`ContextRuleEnhancer` niwelujących *capitalization bias*) oraz opcjonalnego adaptera Transformer NER (`HerBERT` / `GLiNER`). |
+| **[ADR-009](docs/adr/009-pdf-extract-then-anonymize.md)** | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Blokada wysyłki surowych plików binarnych PDF do LLM; ekstrakcja czystego tekstu z odrzuceniem metadanych XMP/Info oraz `HardStop` dla skanów/obrazów przy braku lokalnego OCR. |
