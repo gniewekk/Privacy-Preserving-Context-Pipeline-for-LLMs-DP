@@ -1463,12 +1463,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-ner = [
-    { name = "torch" },
-    { name = "transformers" },
-]
-
-[package.dev-dependencies]
 dev = [
     { name = "bandit" },
     { name = "mypy" },
@@ -1476,25 +1470,25 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+ner = [
+    { name = "torch" },
+    { name = "transformers" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "fastapi", specifier = ">=0.110" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "torch", marker = "extra == 'ner'", specifier = ">=2.2" },
     { name = "transformers", marker = "extra == 'ner'", specifier = ">=4.40" },
 ]
-provides-extras = ["ner"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "bandit", specifier = ">=1.7" },
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pip-audit", specifier = ">=2.7" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.6" },
-]
+provides-extras = ["ner", "dev"]
 
 [[package]]
 name = "py-serializable"

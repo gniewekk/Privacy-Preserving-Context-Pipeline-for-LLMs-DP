@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main", "develop", "milestone/**"]
   pull_request:
-    branches: ["main", "develop"]
+    branches: ["main", "develop", "milestone/**"]
 
 permissions:
   contents: read
@@ -23,12 +23,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          cache-dependency-path: "pyproject.toml"
 
       - name: Install project and security verification tooling
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest ruff mypy bandit pip-audit
+          pip install -e ".[dev]"
 
       - name: Run Ruff Linter & Formatter Check
         run: |
