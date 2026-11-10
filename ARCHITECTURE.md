@@ -114,7 +114,8 @@ Każdy filtr jest niezależną jednostką przetwarzającą, która konsumuje `Pi
 
 ```mermaid
 flowchart LR
-    IN["📥 Wejście\n(surowy tekst)"] --> F1
+    IN["📥 Wejście\n(tekst / PDF / ToolCall)"] --> F0
+    F0["📄 DocumentExtractor\nFilter (PDF → tekst)"] --> F1
     F1["🔍 LanguageDetector\nFilter"] --> F2
     F2["🔍 PIIDetector\nFilter"] --> F3
     F3["📊 RiskAssessment\nFilter"] --> F4
@@ -126,12 +127,15 @@ flowchart LR
     OF1["🔍 OutputPIIDetector\nFilter"] --> OF2["🔐 ResponseRestorer\n(Memento + Vault)"]
     OF2 --> OOUT["📤 Odpowiedź\n(po kontroli PII)"]
 
+    style F0 fill:#e8f8f5,stroke:#117a65
     style F2 fill:#fff3cd,stroke:#d4a017
     style F4 fill:#d0f0c0,stroke:#2d6a4f
     style F5 fill:#d6eaf8,stroke:#1a5276
     style OF1 fill:#fff3cd,stroke:#d4a017
     style OF2 fill:#ffd6a5,stroke:#e07a00
 ```
+
+Na wejściu `Inbound Pipeline` opcjonalny `DocumentExtractorFilter` przechwytuje załączniki dokumentowe (np. pliki PDF), odrzuca metadane binarne (XMP / Info Dictionary) i ekstrahuje czystą warstwę tekstową przed przekazaniem jej do `LanguageDetectorFilter`. Surowe pliki binarne nigdy nie opuszczają pipeline'u, a dokumenty zawierające skany lub osadzone obrazy bez skonfigurowanego lokalnego OCR są zatrzymywane w trybie fail-closed (`HardStop`).
 
 Outbound Pipeline zawiera `OutputPIIDetector`, uruchamiany przed `ResponseRestorer`, de-tokenizacją oraz odwróceniem Memento. Filtr analizuje także odpowiedzi częściowe i może wykonać hard-stop, redakcję lub przekazać wynik do audytu, zanim jakakolwiek wartość zostanie przywrócona z Vault.
 
@@ -438,9 +442,10 @@ flowchart TD
 
 | Komponent | Odpowiedzialność | Wzorzec |
 |-----------|-----------------|---------|
-| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst i obiekty `ToolCall` / `FunctionCall` JSON | Proxy, Facade |
+| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` / `FunctionCall` JSON | Proxy, Facade |
 | `Inbound Pipeline` | Przetwarza `RawInput` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
-| `PIIDetector` | Wykrywa encje PII kombinując reguły regex (PESEL, NIP) + model NER | Filter |
+| `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStop`) surowe binaria lub skany bez lokalnego OCR | Filter |
+| `PIIDetector` | Hybrydowy detektor (Composite): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Composite |
 | `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
 | `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
 | `VaultProxy` | Enforce AuthN/AuthZ/RateLimit przed każdą operacją na Vault | Proxy |
@@ -451,7 +456,9 @@ flowchart TD
 | `PipelineBuilder` | Tworzy i waliduje konfigurację pipeline'u | Builder |
 | `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
 
-`PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`. Dla obiektu `ToolCall` / `FunctionCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
+`PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`:
+- Dla obiektu `ToolCall` / `FunctionCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
+- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `HardStop(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)`.
 
 ```
 ToolCall {
@@ -706,15 +713,41 @@ W żadnym momencie LLM nie otrzymuje jawnego identyfikatora osoby, daty urodzeni
 
 ### 6.1 Wykrywanie PII/PHI
 
-System stosuje **podejście wielowarstwowe**:
+System stosuje **podejście wielowarstwowe (Composite / Ensemble Detector)**:
 
 | Warstwa | Metoda | Przykłady encji |
 |---------|--------|----------------|
-| **Reguły deterministyczne** | Regex + checksum (Luhn, PESEL modulo) | PESEL, NIP, REGON, IBAN, numer dowodu |
-| **NER (Named Entity Recognition)** | Transformer-based (np. fine-tuned HerBERT dla PL) | Imię, nazwisko, adres, organizacja |
-| **Kontekstowe reguły** | Słowa kluczowe + proximity | "diagnoza:", "PESEL:", "ur." |
-| **PHI (dane medyczne)** | HL7/FHIR-aware parser | Kody ICD-10, nazwy leków, procedury |
-| **Cross-entity correlation** | Graf quasi-identyfikatorów | Kombinacje cech demograficznych |
+| **Reguły deterministyczne** | Regex + checksum (Luhn, PESEL modulo) | PESEL, NIP, REGON, IBAN, numer dowodu, e-mail |
+| **NER (Named Entity Recognition)** | Transformer-based (np. fine-tuned HerBERT dla PL, Zero-Shot GLiNER) | Imię, nazwisko, adres, organizacja (także odmienione przez przypadki) |
+| **Słowniki i kontekst (Context Enhancers)** | Gazetteers (baza imion/miejscowości) + słowa kluczowe w oknie sąsiedztwa | `"jan kowalski"` (pisane małymi literami), `"pacjent:"`, `"zamieszkały"` |
+| **PHI (dane medyczne)** | HL7/FHIR-aware parser + NER medyczny | Kody ICD-10, nazwy leków, procedury |
+| **Cross-entity correlation** | Graf quasi-identyfikatorów (`ReIdRiskAnalyzer`) | Kombinacje cech demograficznych (wiek + zawód + lokalizacja) |
+
+#### Wykrywanie danych niepodanych wprost i odporność na brak formatowania
+
+Klasyczne wyrażenia regularne nie wykrywają nieustrukturyzowanych nazw własnych, natomiast standardowe modele NER trenowane na czystych korpusach wykazują tzw. *capitalization bias* (spadek pewności detekcji dla tekstu pisanego małymi literami, np. `"jan kowalski"` zamiast `"Jan Kowalski"`). W celu wyeliminowania tej luki `PIIDetector` łączy trzy poziomy analizy:
+
+1. **Poziom A — Brak wielkich liter, fleksja i literówki (`"z janem kowalskim"`, `"ul. lipowa 5"`):**
+   - **Modele Zero-Shot / Transformer NER:** Wykorzystanie modeli analizujących kontekst składniowy zdania (np. wielojęzyczny `GLiNER` lub polskojęzyczny `HerBERT` / `RoBERTa` dotrenowany z *lowercasing augmentation*, gdzie część zbioru treningowego celowo pozbawiono wielkich liter).
+   - **Gazetteers + `ContextRuleEnhancer`:** Jeśli model transformerowy zwróci dla frazy pisanej małymi literami niższą pewność (np. `confidence = 0.45`), warstwa kontekstowa podbija wynik (`+0.20–0.30`), gdy token występuje w słowniku polskich imion/miejscowości lub w sąsiedztwie słów kluczowych (`"klient"`, `"pacjent"`, `"nazywam się"`, `"mgr"`).
+2. **Poziom B — Dane rozbite lub niestandardowo zapisane (`"j. kowalski"`, `"90 01 01 123 45"`):**
+   - Normalizacja wejścia przed detekcją, luźniejsze wzorce regex weryfikowane sumą kontrolną oraz łączenie sąsiadujących encji częściowych.
+3. **Poziom C — Quasi-identyfikatory i re-identyfikacja pośrednia (*"34-letni neurochirurg z Sępólna Krajeńskiego"*):**
+   - Nawet przy braku bezpośrednich identyfikatorów (`PERSON`, `PESEL`) ekstraktor cech przekazuje wykryte atrybuty (`AGE`, `PROFESSION`, `LOCATION`) do `ReIdRiskAnalyzer`, który wymusza uogólnienie wartości przez `GeneralizationStrategy` (patrz §5.4).
+
+#### Bezpieczna obsługa plików PDF i dokumentów (`Extract-Then-Anonymize`)
+
+Przekazanie surowego pliku PDF bezpośrednio do multimodalnego modelu LLM grozi wyciekiem PII na trzech płaszczyznach:
+1. **Metadane pliku (XMP / Info Dictionary):** autor dokumentu, organizacja, nazwa hosta, historia zmian.
+2. **Ukryte warstwy tekstowe:** pozornie zamazany tekst nadal istnieje w drzewie obiektów PDF.
+3. **Osadzone obrazy (skany, pieczątki, podpisy):** Vision LLM potrafi odczytać dane osobowe z pikseli obrazu.
+
+Dlatego dla dokumentów PDF obowiązuje architektura **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**:
+- **Całkowita blokada surowych binariów:** Oryginalny plik PDF nigdy nie jest przekazywany do zewnętrznego API LLM.
+- **Ekstrakcja tekstu i czyszczenie metadanych:** `DocumentExtractorFilter` (np. w oparciu o lokalny parser `PyMuPDF` / `pdfplumber`) wyciąga wyłącznie warstwę tekstową oraz strukturę tabel, odrzucając wszystkie metadane dokumentu, po czym przekazuje czysty tekst do `LanguageDetector` → `PIIDetector` → `AnonymizationFilter`.
+- **Polityka dla skanów i obrazów (Fail-Closed vs. Local OCR):** Jeśli PDF nie posiada warstwy tekstowej (jest skanem) lub zawiera osadzone obrazy:
+  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `HardStop(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)` i rejestruje zdarzenie w `AuditLog`,
+  - w trybie rozszerzonym (`LOCAL_OCR_ENABLED`) obraz jest przetwarzany przez lokalny silnik OCR działający wewnątrz zaufanej granicy (bez dostępu do sieci), a rozpoznany tekst trafia do standardowej detekcji PII.
 
 **Priorytety błędów detekcji:**
 - **False Negative** (niewykrycie PII) = **krytyczne** — dane trafiają do LLM bez ochrony.
@@ -917,3 +950,17 @@ providers:
 - **Decyzja:** Middleware przechwytuje każde `ToolCall` / `FunctionCall` przed egzekucją, de-tokenizuje wyłącznie wymagane argumenty w Vault, wykonuje zapytanie przez kontrolowany adapter DB, a wynik tokenizuje natychmiast przed zwróceniem go do LLM. Nowe tokeny są dopisywane do Memento bieżącej sesji, a `Outbound Pipeline` wykonuje dwukierunkową kontrolę i de-tokenizację dopiero dla uprawnionego odbiorcy.
 - **Uzasadnienie:** Dwukierunkowa tokenizacja izoluje agenta od danych jawnych i ogranicza zakres ujawnienia do minimalnego, audytowanego wywołania. Rozwiązanie wspiera privacy by design, zasadę minimalizacji danych RODO oraz kontrolę ryzyka systemu agentowego zgodnie z EU AI Act.
 - **Konsekwencje:** Wzrasta latencja i złożoność orkiestracji (przechwycenie call, Vault, DB, tokenizacja wyniku), a każda operacja wymaga spójności `sessionId`, autoryzacji i audytu. W zamian LLM nie może samodzielnie odpytywać bazy, a jawne dane opuszczają zaufaną granicę wyłącznie w kontrolowanym middleware.
+
+### ADR-008: Hybrydowa detekcja nieustrukturyzowanego PII (Ensemble NER + Context Enhancers)
+
+- **Kontekst:** Reguły deterministyczne (regex + suma kontrolna) wykrywają wyłącznie dane o stałym formacie (PESEL, NIP, IBAN). Z kolei standardowe modele Transformer NER wykazują spadek czułości (*capitalization bias*) dla danych pisanych małymi literami (np. `"jan kowalski"`), z błędami lub odmienionych przez przypadki w języku polskim.
+- **Decyzja:** `PIIDetector` jest realizowany jako kompozyt (`CompositePIIDetector`) łączący: (1) deterministyczne walidatory regex/checksum, (2) model Transformer NER (np. Zero-Shot `GLiNER` lub `HerBERT` z *lowercasing augmentation*), oraz (3) warstwę `ContextRuleEnhancer` + słowniki pomocnicze (Gazetteers), które podnoszą `confidence score` wykryć w obecności słów kluczowych i znanych imion/miejscowości.
+- **Alternatywy:** Wyłącznie regex (wysoki odsetek *False Negative* dla nazw własnych) lub pojedynczy model NER bez reguł kontekstowych (podatność na brak wielkich liter).
+- **Konsekwencje:** Wyższe zapotrzebowanie na zasoby obliczeniowe (CPU/GPU) dla warstwy NER w zamian za wysoką czułość (recall) na nieformalnym tekście polskojęzycznym. Zależności ML (`torch`, `transformers`) są izolowane jako opcjonalna grupa w konfiguracji projektu.
+
+### ADR-009: Obsługa dokumentów PDF w modelu Extract-Then-Anonymize (Fail-Closed dla binariów)
+
+- **Kontekst:** Użytkownicy mogą przekazywać do agenta dokumenty PDF zawierające dane wrażliwe (np. faktury, dokumentację medyczną). Przesłanie surowego pliku binarnego PDF do zewnętrznego LLM ujawnia metadane XMP/Info, ukryte warstwy tekstowe oraz tekst widoczny na osadzonych obrazach/skanach.
+- **Decyzja:** Surowe pliki PDF nigdy nie są przekazywane do LLM. Na początku `Inbound Pipeline` filtr `DocumentExtractorFilter` ekstrahuje czystą warstwę tekstową, bezwarunkowo odrzuca metadane pliku i przekazuje tekst do standardowego łańcucha `PIIDetector` → `AnonymizationFilter`. Jeśli dokument PDF jest skanem (brak warstwy tekstowej) lub zawiera osadzone obrazy, a lokalny moduł OCR nie jest aktywny, pipeline przerywa przetwarzanie (`HardStop: UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII`) i zapisuje zdarzenie w `AuditLog`.
+- **Alternatywy:** Całkowite odrzucanie wszystkich plików PDF (zbyt restrykcyjne funkcjonalnie) lub bezpośrednie przesyłanie PDF do multimodalnego LLM (krytyczne naruszenie Privacy by Design).
+- **Konsekwencje:** Utrata oryginalnego formatowania wizualnego dokumentu na rzecz czystego tekstu/Markdown przekazywanego do LLM, przy pełnej gwarancji, że żadne nieprzeskanowane warstwy binarne ani metadane nie opuszczą zaufanej strefy.
