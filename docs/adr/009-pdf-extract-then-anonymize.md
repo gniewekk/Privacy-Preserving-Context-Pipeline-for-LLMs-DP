@@ -53,4 +53,4 @@ Extracting whatever text exists in a hybrid PDF while silently dropping image wa
 ## 5. Compliance with Scenarios
 
 - **Scenario 1 & 3 (Pseudonymization & EU Data Residency for PHI):** Ensures clinical PDF attachments are stripped of metadata, scanned for PHI, and gated by `ResidencyGate` before any external dispatch.
-- **Week 6 Extensibility:** Demonstrates how new input modalities (PDFs, structured documents) can be normalized via an entry `Filter` without changing downstream `PIIDetector` or `AnonymizationStrategy` implementations.
+- **Scenario 6 (Extensibility):** Demonstrates how new input modalities (PDFs, structured documents) can be normalized via an entry `Filter` without changing downstream `PIIDetector` or `AnonymizationStrategy` implementations.

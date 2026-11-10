@@ -1,6 +1,6 @@
 ## Summary & Context
 
-<!-- Briefly describe the purpose of this PR and which milestone/scenario it addresses -->
+<!-- Briefly describe the purpose of this PR and which scenario it addresses -->
 
 - **Linked ADR(s):** `ADR-00X` (`docs/adr/00X-...`)
 - **Design Pattern(s) Affected:**
@@ -15,7 +15,7 @@
   - [ ] Scenario 3: EU Data Residency Gate for PHI
   - [ ] Scenario 4: Re-Identification Risk & $k$-Anonymity Generalization
   - [ ] Scenario 5: Cryptographic Key Rotation & Token TTL Expiration
-  - [ ] Scenario 6 / Week 6: Zero-Core-Modification Extension (e.g., Polish IBAN)
+  - [ ] Scenario 6: Zero-Core-Modification Extension (e.g., Polish IBAN)
 
 ---
 

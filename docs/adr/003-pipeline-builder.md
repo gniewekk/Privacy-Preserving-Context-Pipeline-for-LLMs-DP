@@ -53,7 +53,7 @@ Passing all collaborators directly to `Pipeline.__init__`.
 
 ### Alternative B: Static Factory Methods Only (`PipelineFactory.create_eu_medical_pipeline()`)
 Providing fixed factory methods for predefined pipeline profiles.
-- **Why Rejected:** While preset directors/factories are convenient, relying *only* on fixed factory methods prevents custom composition when new detectors (Scenario 6 IBAN) or Week 6 requirements arrive, forcing edits to the factory class for every permutation. (Note: Preset helper methods may still delegate to `PipelineBuilder` internally).
+- **Why Rejected:** While preset directors/factories are convenient, relying *only* on fixed factory methods prevents custom composition when new detectors (Scenario 6 IBAN) or new requirements arrive, forcing edits to the factory class for every permutation. (Note: Preset helper methods may still delegate to `PipelineBuilder` internally).
 
 ---
 

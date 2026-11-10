@@ -116,7 +116,7 @@ flowchart LR
   - *Abuse (Revoked Key Access):* Mark `key_v1` as `REVOKED` and attempt `detokenize(T1)`; assert `KeyExpiredError` is raised.
   - *Abuse (Unauthorized Key Rotation):* Caller without `Permission.ROTATE_KEYS` calls `vault_proxy.rotate_keys()`; assert `UnauthorizedVaultAccessError` and `DENIED` audit event.
 
-### Scenario 6 & Week 6 Change Request: Extensibility Without Core Modification (Polish IBAN)
+### Scenario 6: Extensibility Without Core Modification (Polish IBAN)
 - **Primary Threats:** Architectural Regression / Security Bypass during Extension (T, I).
 - **Mitigations:**
   - New `PolishIBANDetector` (implementing ISO 13616 Modulo-97 checksum validation) and `IBANMaskingStrategy` implement `PIIDetector` and `AnonymizationStrategy` protocols and are registered via `PipelineBuilder` with zero edits to `src/pipeline/`.

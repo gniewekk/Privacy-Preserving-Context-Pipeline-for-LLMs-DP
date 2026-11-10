@@ -13,7 +13,7 @@ The pipeline must detect diverse PII/PHI categories (Polish PESEL, SSN, email ad
 2. **Reversible Cryptographic Tokenization:** For entities that must be restored in the LLM's response for authorized users (e.g., `Jan Kowalski` -> `<PERSON_1>`).
 3. **$k$-Anonymity Generalization:** For quasi-identifiers (age, city, postal code) where combinations could re-identify an individual even after direct identifiers are removed.
 
-Furthermore, Scenario 6 requires adding a new detector/strategy (such as Polish IBAN detection and formatting-preserving masking) and Milestone 3 (Week 6) introduces an unannounced change request. If `DetectionFilter` or `AnonymizationFilter` contains conditional branching (`if entity.type == "PESEL": ...`), every new entity or algorithm violates the Open-Closed Principle (OCP) and risks breaking existing sanitization logic.
+Furthermore, Scenario 6 requires adding a new detector/strategy (such as Polish IBAN detection and formatting-preserving masking) and accommodating future change requests without core modifications. If `DetectionFilter` or `AnonymizationFilter` contains conditional branching (`if entity.type == "PESEL": ...`), every new entity or algorithm violates the Open-Closed Principle (OCP) and risks breaking existing sanitization logic.
 
 ---
 
@@ -52,7 +52,7 @@ class AnonymizationStrategy(Protocol):
 
 ### Alternative A: Conditional `if/elif/match` Dispatch Inside `AnonymizationFilter`
 Hardcoding strategy selection inside `AnonymizationFilter.process()` based on `EntityType` enums.
-- **Why Rejected:** Directly violates OCP and `AGENTS.md`. Adding a Polish IBAN detector or a Week 6 synthetic data replacement strategy would force edits to core pipeline classes and require modifying exhaustive `match` blocks across the codebase.
+- **Why Rejected:** Directly violates OCP and `AGENTS.md`. Adding a Polish IBAN detector or a synthetic data replacement strategy would force edits to core pipeline classes and require modifying exhaustive `match` blocks across the codebase.
 
 ### Alternative B: Class Inheritance Hierarchy on `DetectedEntity` (`PeselEntity.anonymize()`)
 Embedding the anonymization algorithm directly as a method on entity subclasses.
@@ -76,4 +76,4 @@ Embedding the anonymization algorithm directly as a method on entity subclasses.
 
 - **Scenario 1 (Pseudonymization):** `ReversibleTokenizationStrategy` delegates encryption to `VaultProtectionProxy` and records token placeholders in `AnonymizationMemento`.
 - **Scenario 4 ($k$-Anonymity Generalization):** `KAnonymityGeneralizationStrategy` generalizes quasi-identifier attributes until the equivalence class size satisfies $k$.
-- **Scenario 6 (IBAN / New Detector Extension) & Week 6 Change Survivability:** Proves that new detectors and anonymization algorithms plug into the pipeline via `PipelineBuilder` without modifying core pipeline files.
+- **Scenario 6 (IBAN / New Detector Extension):** Proves that new detectors and anonymization algorithms plug into the pipeline via `PipelineBuilder` without modifying core pipeline files.

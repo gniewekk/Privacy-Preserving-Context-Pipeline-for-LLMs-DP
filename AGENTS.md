@@ -1,7 +1,7 @@
 # AI Agent Governance & Architecture Instructions (`AGENTS.md`)
 
 > **Project:** LLM Anonymization & Pseudonymization Pipeline  
-> **Course:** University Design Patterns & Security Project (4-Person Team | 4 Milestones: Weeks 2, 4, 6, 8)  
+> **Course:** University Design Patterns & Security Project (4-Person Team)  
 > **Python Runtime:** Python 3.12+  
 > **Core Stack:** Pydantic v2, FastAPI, `cryptography` (AES-256-GCM), `pytest`, `ruff`, `mypy`, `bandit`, `pip-audit`
 
@@ -102,9 +102,9 @@ src/
 
 ---
 
-## 4. Week 6 "Hidden Change Request" Readiness
+## 4. Extensibility & Change Request Readiness
 
-In Week 6 (Milestone 3), the instructors will introduce an unannounced architectural change request (e.g., new regulatory jurisdiction, multi-hop agentic tool-calling sanitization, streaming response detokenization, or a new hybrid cryptographic/synthetic strategy). To guarantee survival without core rewrites:
+To guarantee that new architectural requirements (e.g., new regulatory jurisdictions, multi-hop agentic tool-calling sanitization, streaming response detokenization, or new hybrid cryptographic/synthetic strategies) can be introduced without core rewrites:
 
 1. **FORBIDDEN — Hardcoded Providers:** Never hardcode `"openai"`, `"anthropic"`, `"azure"`, or provider URLs inside `src/pipeline/`, `src/vault/`, or `src/state/`. All external LLM interactions go through an abstract `LLMDispatcher` protocol carrying declarative `EndpointMetadata` (provider ID, region, certifications).
 2. **FORBIDDEN — Hardcoded Jurisdictions:** Never hardcode `if region == "US":` or `if region != "EU":` inside `ResidencyGate`. Jurisdiction rules must be evaluated via injected `ResidencyPolicy` specifications.

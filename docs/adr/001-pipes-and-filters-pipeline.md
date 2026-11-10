@@ -38,7 +38,7 @@ We adopt the **Pipes & Filters** architectural pattern (`src/pipeline/`) operati
 
 ### Alternative A: Monolithic `SanitizationService` Class
 A single procedural service orchestrating detection, risk calculation, vault encryption, residency checks, and LLM dispatch in one method (`sanitize_and_send()`).
-- **Why Rejected:** Violates SRP and the Open-Closed Principle (OCP). Reordering stages, making $k$-anonymity optional for non-analytic workloads, or accommodating the Week 6 hidden change request would require editing a high-risk central method, increasing regression and security bypass risks.
+- **Why Rejected:** Violates SRP and the Open-Closed Principle (OCP). Reordering stages, making $k$-anonymity optional for non-analytic workloads, or accommodating new architectural change requests would require editing a high-risk central method, increasing regression and security bypass risks.
 
 ### Alternative B: Asynchronous Event-Driven Message Broker (Kafka / RabbitMQ Choreography)
 Publishing prompts and intermediate sanitization states as asynchronous events across decoupled broker topics.
@@ -63,4 +63,4 @@ Publishing prompts and intermediate sanitization states as asynchronous events a
 - **Scenario 1 (Pseudonymization Happy Path):** Inbound `DetectionFilter` -> `AnonymizationFilter` replaces PII with `<PERSON_1>` tokens; outbound `RestorationFilter` restores values for authorized callers.
 - **Scenario 3 (EU Data Residency Block for PHI):** `ResidencyGate` inspects `context.detected_entities` for `PHI` tags and compares against `context.target_endpoint.region`, raising `ResidencyViolationError` before any network call occurs.
 - **Scenario 4 (Re-identification Risk / $k$-Anonymity):** `RiskAssessmentFilter` evaluates quasi-identifier combinations in `PipelineContext` and invokes generalization or halts execution if $k < k_{\text{target}}$.
-- **Scenario 6 & Week 6 Extensibility:** New filters can be inserted into the pipe without modifying any existing filter implementation.
+- **Scenario 6 (Extensibility):** New filters can be inserted into the pipe without modifying any existing filter implementation.

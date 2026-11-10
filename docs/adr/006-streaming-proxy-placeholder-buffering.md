@@ -45,7 +45,7 @@ Running string replacement independently on each raw SSE chunk as it arrives.
 ### Positive
 - **Sub-Millisecond Streaming Overhead:** Non-placeholder text flows immediately while placeholders are atomically reassembled and detokenized.
 - **Preserves RBAC & Audit Guarantees:** Every resolved placeholder still passes through `VaultProtectionProxy` and `AnonymizationMemento` verification.
-- **Week 6 Change Readiness:** Directly prepares the outbound pipeline if the Week 6 hidden change request introduces streaming response sanitization.
+- **Change Readiness:** Directly prepares the outbound pipeline for streaming response sanitization.
 
 ### Negative / Mitigations
 - **Slight Jitter on `<` Characters:** Any literal `<` in normal text (e.g., mathematical comparisons `a < b`) briefly buffers until the first non-token character (such as a space or lowercase letter) is seen. *Mitigation:* Strict regex prefix matching flushes non-matching `<` sequences as soon as the first invalid character arrives (typically 1–2 tokens).
@@ -56,4 +56,4 @@ Running string replacement independently on each raw SSE chunk as it arrives.
 
 - **Scenario 1 (Pseudonymization & Restoration):** Guarantees that `<PERSON_1>` and `<PESEL_1>` placeholders are accurately restored even when streamed across chunk boundaries.
 - **Scenario 2 (Unauthorized Detokenization):** If the streaming consumer lacks `DETOKENIZE` permission, `VaultProtectionProxy` denies restoration and logs the attempt without stalling or crashing the pipeline.
-- **Week 6 Extensibility:** Provides a clean streaming abstraction decoupled from concrete LLM provider SDKs.
+- **Scenario 6 (Extensibility):** Provides a clean streaming abstraction decoupled from concrete LLM provider SDKs.

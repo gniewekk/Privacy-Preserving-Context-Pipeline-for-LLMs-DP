@@ -8,7 +8,7 @@
 
 ## 1. Human-in-the-Loop (HITL) Engineering Workflow
 
-Our team enforces a 3-stage Human-in-the-Loop workflow for every feature and milestone:
+Our team enforces a 3-stage Human-in-the-Loop workflow for every feature and pull request:
 
 ```mermaid
 flowchart LR

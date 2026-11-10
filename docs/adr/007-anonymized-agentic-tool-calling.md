@@ -59,4 +59,4 @@ Creating an isolated Memento for the tool call that overwrites the initial promp
 
 - **Scenario 1 & 2 (Pseudonymization & Authorized Detokenization):** Extends reversible tokenization and RBAC enforcement to structured `ToolCall` payloads.
 - **Scenario 3 (Data Residency):** Prevents sensitive database records fetched during tool calls from leaking to non-compliant external LLM endpoints.
-- **Week 6 Extensibility:** Prepares the architecture for multi-hop agentic sanitization changes without altering core `Filter` or `VaultProtocol` interfaces.
+- **Scenario 6 (Extensibility):** Prepares the architecture for multi-hop agentic sanitization changes without altering core `Filter` or `VaultProtocol` interfaces.
