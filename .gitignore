@@ -1,0 +1,37 @@
+TEAM_TASKS_DIVISION.md
+MOJE_ZAGADNIENIA.md
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Test / coverage / linter / typecheck artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Python bytecode and packaging artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Local environment files
+.env
+.env.*
