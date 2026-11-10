@@ -1,0 +1,94 @@
+name: Append PR AI Usage Log to docs/AI_USAGE.md
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ["main", "develop"]
+
+permissions:
+  contents: write
+
+jobs:
+  append-ai-usage-log:
+    name: Extract AI Usage Log from Merged PR
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - name: Extract AI Usage section and append to docs/AI_USAGE.md
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          import re
+          from pathlib import Path
+
+          pr_number = os.environ.get("PR_NUMBER", "").strip()
+          pr_title = os.environ.get("PR_TITLE", "").strip()
+          pr_author = os.environ.get("PR_AUTHOR", "").strip()
+          pr_url = os.environ.get("PR_URL", "").strip()
+          pr_merged_at = os.environ.get("PR_MERGED_AT", "")[:10]
+          pr_body = os.environ.get("PR_BODY") or ""
+
+          log_path = Path("docs/AI_USAGE.md")
+          content = log_path.read_text(encoding="utf-8")
+
+          header_marker = f"### [{pr_merged_at}] PR #{pr_number}:"
+          if f"PR #{pr_number}:" in content:
+              print(f"PR #{pr_number} already logged in docs/AI_USAGE.md; skipping.")
+              raise SystemExit(0)
+
+          # Extract the section starting at "## AI Agent Usage Log" up to the next "---" or "## "
+          pattern = re.compile(
+              r"##\s+AI Agent Usage Log[^\n]*\n(.*?)(?=\n---|\n##\s+|\Z)",
+              re.DOTALL | re.IGNORECASE,
+          )
+          match = pattern.search(pr_body)
+          if match:
+              raw_section = match.group(1)
+              # Strip HTML comments and blockquote instructions
+              cleaned_lines = [
+                  line
+                  for line in raw_section.splitlines()
+                  if not line.strip().startswith(">")
+              ]
+              cleaned_section = re.sub(r"<!--.*?-->", "", "\n".join(cleaned_lines), flags=re.DOTALL).strip()
+          else:
+              cleaned_section = "- *No structured AI Agent Usage Log section found in PR description.*"
+
+          if not cleaned_section:
+              cleaned_section = "- *AI Agent Usage Log section was left empty in PR description.*"
+
+          entry = (
+              f"\n{header_marker} {pr_title}\n"
+              f"- **Author:** `@{pr_author}` | **PR:** [#{pr_number}]({pr_url})\n"
+              f"{cleaned_section}\n"
+          )
+
+          log_path.write_text(content.rstrip() + "\n" + entry, encoding="utf-8")
+          print(f"Appended AI usage log for PR #{pr_number}.")
+          EOF
+
+      - name: Commit and push updated docs/AI_USAGE.md
+        run: |
+          if git diff --quiet docs/AI_USAGE.md; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/AI_USAGE.md
+          git commit -m "docs(ai-usage): append AI usage log from PR #${{ github.event.pull_request.number }} [skip ci]"
+          git push origin HEAD:${{ github.event.pull_request.base.ref }}
