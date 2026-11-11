@@ -5,6 +5,8 @@ from strategies.base import (
     MaskingStrategy,
     PlaceholderTokenStrategy,
     StrategyRegistry,
+    StrategySelector,
+    TokenizationStrategy,
     register_strategy,
 )
 
@@ -13,5 +15,7 @@ __all__ = [
     "MaskingStrategy",
     "PlaceholderTokenStrategy",
     "StrategyRegistry",
+    "StrategySelector",
+    "TokenizationStrategy",
     "register_strategy",
 ]

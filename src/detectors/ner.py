@@ -13,6 +13,7 @@ type NERPipelineCallable = Callable[[str], Sequence[RawNERPrediction]]
 
 DEFAULT_ENGLISH_NER_MODEL = "dslim/bert-base-NER"
 DEFAULT_POLISH_NER_MODEL = "allegro/herbert-base-cased"
+DEFAULT_POLISH_FINETUNED_NER_MODEL = "pietruszkowiec/herbert-base-ner"
 
 # Unified label mapping covering CoNLL-2003 (English) and NKJP / KPWr (Polish) NER tagsets
 _LABEL_TO_ENTITY_TYPE: Mapping[str, EntityType] = {
@@ -94,9 +95,14 @@ class NERPIIDetector(PIIDetector):
                 "or inject a `ner_pipeline` callable."
             ) from exc
 
+        hf_checkpoint = (
+            DEFAULT_POLISH_FINETUNED_NER_MODEL
+            if self._model_name == DEFAULT_POLISH_NER_MODEL
+            else self._model_name
+        )
         loaded_pipeline: Any = hf_pipeline(
             task="ner",
-            model=self._model_name,
+            model=hf_checkpoint,
             aggregation_strategy="simple",
         )
         self._ner_pipeline = loaded_pipeline
@@ -155,15 +161,12 @@ class NERPIIDetector(PIIDetector):
         detected = self._convert_predictions(text, primary_predictions)
 
         # Level A Capitalization Bias Mitigation:
-        # Cased BERT/HerBERT NER models often miss all-lowercase names (e.g., "john smith",
-        # "jan kowalski"). Project to title-case of identical length and map offsets back.
-        if (
-            self._enable_lowercase_fallback
-            and text == text.lower()
-            and any(c.isalpha() for c in text)
-        ):
+        # Cased BERT/HerBERT NER models often miss lowercase names embedded in mixed-case
+        # or all-lowercase prompts (e.g., "Rozmawiałem z janem kowalskim w warszawie").
+        # Project lowercase words to title-case of identical length and map offsets back.
+        if self._enable_lowercase_fallback and any(c.islower() for c in text):
             title_projection = text.title()
-            if len(title_projection) == len(text):
+            if title_projection != text and len(title_projection) == len(text):
                 fallback_predictions = runner(title_projection)
                 detected.extend(
                     self._convert_predictions(

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import uuid
+import zlib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from detectors.base import PIIDetector, resolve_overlapping_spans
+from detectors.heuristic import ContextRuleEnhancer
 from domain.exceptions import (
     ResidencyViolationError,
     UnsupportedMediaWithPotentialPIIError,
@@ -34,12 +36,23 @@ from strategies.base import StrategyRegistry
 # Regex helpers for local, zero-network PDF metadata stripping & text stream extraction
 _PDF_XMP_PATTERN = re.compile(rb"<x:xmpmeta\b.*?</x:xmpmeta>", re.DOTALL | re.IGNORECASE)
 _PDF_INFO_TAG_PATTERN = re.compile(
-    rb"/(?:Author|Creator|Producer|Title|Subject|Keywords)\s*\([^)]*\)",
+    rb"/(?:Author|Creator|Producer|Title|Subject|Keywords)\s*(?:\([^)]*\)|<[0-9A-Fa-f]*>)",
     re.IGNORECASE,
 )
+_PDF_HIDDEN_ANNOT_PATTERN = re.compile(
+    rb"<<[^>]*?/Subtype\s*/(?:Redact|Hidden|Watermark)[^>]*?>>",
+    re.DOTALL | re.IGNORECASE,
+)
 _PDF_IMAGE_SUBTYPE_PATTERN = re.compile(rb"/Subtype\s*/Image\b")
+_PDF_STREAM_BLOCK_PATTERN = re.compile(
+    rb"(<<[^>]*?>>)?\s*stream\r?\n(.*?)\r?\nendstream",
+    re.DOTALL,
+)
 _PDF_TEXT_BLOCK_PATTERN = re.compile(rb"BT\b(.*?)\bET", re.DOTALL)
-_PDF_LITERAL_STRING_PATTERN = re.compile(rb"\(([^()\\]*(?:\\.[^()\\]*)*)\)")
+_PDF_STRING_TOKEN_PATTERN = re.compile(
+    rb"\(([^()\\]*(?:\\.[^()\\]*)*)\)|<([0-9A-Fa-f]{2,})>"
+)
+_MAX_DECOMPRESSED_PDF_STREAM_BYTES = 10 * 1024 * 1024  # 10 MB safety cap against zip bombs
 
 _POLISH_DIACRITICS = frozenset("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
 _POLISH_MARKERS = frozenset(
@@ -62,8 +75,37 @@ _POLISH_MARKERS = frozenset(
 )
 
 
+def _extract_bt_et_fragments(content_bytes: bytes) -> list[str]:
+    """Extract literal and hex-encoded text strings from PDF BT...ET blocks."""
+    fragments: list[str] = []
+    for bt_match in _PDF_TEXT_BLOCK_PATTERN.finditer(content_bytes):
+        block = bt_match.group(1)
+        for token_match in _PDF_STRING_TOKEN_PATTERN.finditer(block):
+            literal_part = token_match.group(1)
+            hex_part = token_match.group(2)
+            if literal_part is not None:
+                decoded = (
+                    literal_part.replace(rb"\(", b"(")
+                    .replace(rb"\)", b")")
+                    .replace(rb"\\", b"\\")
+                    .decode("utf-8", errors="ignore")
+                    .strip()
+                )
+                if decoded:
+                    fragments.append(decoded)
+            elif hex_part is not None and len(hex_part) % 2 == 0:
+                try:
+                    raw_hex = bytes.fromhex(hex_part.decode("ascii"))
+                    decoded_hex = raw_hex.decode("utf-8", errors="ignore").strip()
+                    if decoded_hex:
+                        fragments.append(decoded_hex)
+                except ValueError:
+                    continue
+    return fragments
+
+
 def _extract_clean_pdf_text(raw_pdf_bytes: bytes) -> tuple[str, bool]:
-    """Strip XMP/Info metadata from PDF bytes and extract text layer and image flag."""
+    """Strip XMP/Info metadata from PDF bytes, decompress FlateDecode streams, and extract text."""
     if not raw_pdf_bytes.startswith(b"%PDF-"):
         raise UnsupportedMediaWithPotentialPIIError(
             "Invalid or unsupported binary document header; expected PDF attachment."
@@ -71,26 +113,54 @@ def _extract_clean_pdf_text(raw_pdf_bytes: bytes) -> tuple[str, bool]:
 
     has_embedded_image = bool(_PDF_IMAGE_SUBTYPE_PATTERN.search(raw_pdf_bytes))
 
-    # Strip XMP metadata streams and /Info dictionary tags before text extraction
+    # Strip XMP metadata streams, /Info dictionary tags, and hidden annotation layers
     scrubbed = _PDF_XMP_PATTERN.sub(b"", raw_pdf_bytes)
     scrubbed = _PDF_INFO_TAG_PATTERN.sub(b"", scrubbed)
+    scrubbed = _PDF_HIDDEN_ANNOT_PATTERN.sub(b"", scrubbed)
 
     extracted_fragments: list[str] = []
-    for bt_match in _PDF_TEXT_BLOCK_PATTERN.finditer(scrubbed):
-        block = bt_match.group(1)
-        for str_match in _PDF_LITERAL_STRING_PATTERN.finditer(block):
-            raw_fragment = str_match.group(1)
-            decoded = (
-                raw_fragment.replace(rb"\(", b"(")
-                .replace(rb"\)", b")")
-                .replace(rb"\\", b"\\")
-                .decode("utf-8", errors="ignore")
-                .strip()
-            )
-            if decoded:
-                extracted_fragments.append(decoded)
+    stream_matches = list(_PDF_STREAM_BLOCK_PATTERN.finditer(scrubbed))
+
+    if stream_matches:
+        for stream_match in stream_matches:
+            stream_dict = stream_match.group(1) or b""
+            stream_data = stream_match.group(2)
+            # Skip metadata or image object streams
+            if b"/Subtype /Image" in stream_dict or b"/Type /Metadata" in stream_dict:
+                continue
+            payload = stream_data
+            if b"/FlateDecode" in stream_dict:
+                try:
+                    decompressor = zlib.decompressobj()
+                    payload = decompressor.decompress(
+                        stream_data, _MAX_DECOMPRESSED_PDF_STREAM_BYTES
+                    )
+                except zlib.error:
+                    payload = b""
+            payload_scrubbed = _PDF_XMP_PATTERN.sub(b"", payload)
+            payload_scrubbed = _PDF_INFO_TAG_PATTERN.sub(b"", payload_scrubbed)
+            extracted_fragments.extend(_extract_bt_et_fragments(payload_scrubbed))
+    else:
+        extracted_fragments.extend(_extract_bt_et_fragments(scrubbed))
 
     return " ".join(extracted_fragments).strip(), has_embedded_image
+
+
+def _collect_json_strings(value: Any) -> list[str]:
+    """Recursively collect all string leaf values from a JSON-like structure."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for v in value.values():
+            out.extend(_collect_json_strings(v))
+        return out
+    if isinstance(value, (list, tuple)):
+        out_list: list[str] = []
+        for item in value:
+            out_list.extend(_collect_json_strings(item))
+        return out_list
+    return []
 
 
 class DocumentExtractorFilter(Filter):
@@ -180,7 +250,7 @@ class DocumentExtractorFilter(Filter):
 
 
 class LanguageDetectorFilter(Filter):
-    """Detects prompt language ('pl' vs 'en') before PII detection."""
+    """Detects prompt or ToolCall language ('pl' vs 'en') before PII detection."""
 
     @property
     def filter_name(self) -> str:
@@ -188,6 +258,8 @@ class LanguageDetectorFilter(Filter):
 
     def process(self, context: PipelineContext) -> PipelineContext:
         text = context.current_text
+        if not text.strip() and context.tool_call is not None:
+            text = " ".join(_collect_json_strings(context.tool_call.arguments))
         if not text.strip():
             return context
 
@@ -202,8 +274,17 @@ class LanguageDetectorFilter(Filter):
 class DetectionFilter(Filter):
     """Stateless filter orchestrating registered PIIDetector strategies without branching."""
 
-    def __init__(self, detectors: Sequence[PIIDetector]) -> None:
+    def __init__(
+        self,
+        detectors: Sequence[PIIDetector],
+        k_anonymity_threshold: int | None = None,
+        re_id_risk_threshold: float | None = None,
+        enhancer: ContextRuleEnhancer | None = None,
+    ) -> None:
         self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
+        self._k_anonymity_threshold = k_anonymity_threshold
+        self._re_id_risk_threshold = re_id_risk_threshold
+        self._enhancer = enhancer or ContextRuleEnhancer()
 
     @property
     def filter_name(self) -> str:
@@ -212,18 +293,42 @@ class DetectionFilter(Filter):
     def process(self, context: PipelineContext) -> PipelineContext:
         text = context.current_text
         all_detected: list[DetectedEntity] = []
-        for detector in self._detectors:
-            all_detected.extend(detector.detect(text, language=context.language))
+        if text.strip():
+            for detector in self._detectors:
+                all_detected.extend(detector.detect(text, language=context.language))
 
-        merged = resolve_overlapping_spans(all_detected)
+        enhanced = self._enhancer.enhance(text, all_detected) if all_detected else ()
+        merged = resolve_overlapping_spans(enhanced)
         elevated_class = context.data_class
         if any(e.data_class == DataClass.PHI for e in merged):
             elevated_class = DataClass.PHI
+        elif context.tool_call is not None:
+            for arg_str in _collect_json_strings(context.tool_call.arguments):
+                for detector in self._detectors:
+                    if any(
+                        e.data_class == DataClass.PHI
+                        for e in detector.detect(arg_str, language=context.language)
+                    ):
+                        elevated_class = DataClass.PHI
+                        break
+
+        effective_k = (
+            context.k_anonymity_threshold
+            if context.k_anonymity_threshold is not None
+            else self._k_anonymity_threshold
+        )
+        effective_risk = (
+            context.re_id_risk_threshold
+            if context.re_id_risk_threshold is not None
+            else self._re_id_risk_threshold
+        )
 
         return context.model_copy(
             update={
                 "detected_entities": merged,
                 "data_class": elevated_class,
+                "k_anonymity_threshold": effective_k,
+                "re_id_risk_threshold": effective_risk,
             }
         )
 
@@ -235,9 +340,11 @@ class AnonymizationFilter(Filter):
         self,
         strategy_registry: StrategyRegistry,
         detectors: Sequence[PIIDetector] = (),
+        enhancer: ContextRuleEnhancer | None = None,
     ) -> None:
         self._strategy_registry = strategy_registry
         self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
+        self._enhancer = enhancer or ContextRuleEnhancer()
 
     @property
     def filter_name(self) -> str:
@@ -295,26 +402,29 @@ class AnonymizationFilter(Filter):
         counters: dict[EntityType, int],
         placeholder_map: dict[str, str],
         results_acc: list[AnonymizationResult],
+        entities_acc: list[DetectedEntity],
     ) -> Any:
         if isinstance(value, str):
             detected: list[DetectedEntity] = []
             for detector in self._detectors:
                 detected.extend(detector.detect(value, language=context.language))
-            merged = resolve_overlapping_spans(detected)
+            enhanced = self._enhancer.enhance(value, detected) if detected else ()
+            merged = resolve_overlapping_spans(enhanced)
+            entities_acc.extend(merged)
             return self._anonymize_string(
                 value, merged, context, counters, placeholder_map, results_acc
             )
         if isinstance(value, dict):
             return {
                 str(k): self._sanitize_json_value(
-                    v, context, counters, placeholder_map, results_acc
+                    v, context, counters, placeholder_map, results_acc, entities_acc
                 )
                 for k, v in value.items()
             }
         if isinstance(value, list):
             return [
                 self._sanitize_json_value(
-                    item, context, counters, placeholder_map, results_acc
+                    item, context, counters, placeholder_map, results_acc, entities_acc
                 )
                 for item in value
             ]
@@ -324,6 +434,7 @@ class AnonymizationFilter(Filter):
         counters: dict[EntityType, int] = {}
         placeholder_map: dict[str, str] = dict(context.placeholder_map)
         results_acc: list[AnonymizationResult] = list(context.anonymization_results)
+        entities_acc: list[DetectedEntity] = list(context.detected_entities)
 
         sanitized_text = self._anonymize_string(
             context.current_text,
@@ -342,6 +453,7 @@ class AnonymizationFilter(Filter):
                 counters,
                 placeholder_map,
                 results_acc,
+                entities_acc,
             )
             sanitized_tool_call = context.tool_call.model_copy(
                 update={"arguments": sanitized_args}
@@ -350,6 +462,7 @@ class AnonymizationFilter(Filter):
         return context.model_copy(
             update={
                 "sanitized_text": sanitized_text,
+                "detected_entities": tuple(entities_acc),
                 "anonymization_results": tuple(results_acc),
                 "placeholder_map": placeholder_map,
                 "tool_call": sanitized_tool_call,
@@ -432,3 +545,9 @@ class AuditContextFilter(Filter):
                 )
             )
         return context
+
+
+# ARCHITECTURE.md (§3.1 & §4) canonical filter aliases
+LanguageDetector = LanguageDetectorFilter
+PIIDetectorFilter = DetectionFilter
+ResidencyPolicyFilter = ResidencyGate

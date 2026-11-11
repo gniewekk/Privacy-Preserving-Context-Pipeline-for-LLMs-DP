@@ -44,6 +44,8 @@ class PipelineContext(BaseModel):
     language: str = "en"
     data_class: DataClass = DataClass.GENERAL
     audit_level: AuditLevel = AuditLevel.FULL
+    k_anonymity_threshold: int | None = None
+    re_id_risk_threshold: float | None = None
     detected_entities: tuple[DetectedEntity, ...] = ()
     anonymization_results: tuple[AnonymizationResult, ...] = ()
     placeholder_map: dict[str, str] = Field(default_factory=dict)

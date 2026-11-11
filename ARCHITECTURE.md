@@ -445,7 +445,7 @@ flowchart TD
 | `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` / `FunctionCall` JSON | Proxy, Facade |
 | `Inbound Pipeline` | Przetwarza `RawInput` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
 | `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStop`) surowe binaria lub skany bez lokalnego OCR | Filter |
-| `PIIDetector` | Hybrydowy detektor (Composite): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Composite |
+| `PIIDetector` | Hybrydowy detektor (Strategy): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Strategy |
 | `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
 | `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
 | `VaultProxy` | Enforce AuthN/AuthZ/RateLimit przed każdą operacją na Vault | Proxy |
@@ -713,7 +713,7 @@ W żadnym momencie LLM nie otrzymuje jawnego identyfikatora osoby, daty urodzeni
 
 ### 6.1 Wykrywanie PII/PHI
 
-System stosuje **podejście wielowarstwowe (Composite / Ensemble Detector)**:
+System stosuje **podejście wielowarstwowe (Multi-Strategy Ensemble Detector)**:
 
 | Warstwa | Metoda | Przykłady encji |
 |---------|--------|----------------|
@@ -916,5 +916,5 @@ Pełne rekordy decyzji architektonicznych (zawierające sekcje *Context & Proble
 | **[ADR-005](docs/adr/005-memento-state-restoration.md)** | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | `AnonymizationMemento` przechowuje wyłącznie hermetyzowane wskaźniki `placeholder -> token_id` oraz wersję klucza (zero jawnego PII poza Vaultem); odtworzenie odpowiedzi zawsze przechodzi przez autoryzację w Proxy. |
 | **[ADR-006](docs/adr/006-streaming-proxy-placeholder-buffering.md)** | Streaming Response Detokenization via Placeholder Window Buffering | **Pipes & Filters (Streaming)** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE pozwala atomowo de-tokenizować placeholdery podzielone między chunkami i skanować wyjście przez `OutputPIIDetector` bez buforowania całej odpowiedzi. |
 | **[ADR-007](docs/adr/007-anonymized-agentic-tool-calling.md)** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie `ToolCall` w middleware, de-tokenizacja argumentów zapytania do DB wewnątrz zaufanej granicy, natychmiastowa tokenizacja wyniku narzędzia i wersjonowane rozszerzenie `AnonymizationMemento`. |
-| **[ADR-008](docs/adr/008-hybrid-ner-and-context-enhancers.md)** | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy + Composite** | Accepted | Połączenie walidatorów regex/checksum, reguł kontekstowych (`ContextRuleEnhancer` niwelujących *capitalization bias*) oraz opcjonalnego adaptera Transformer NER (`HerBERT` / `GLiNER`). |
+| **[ADR-008](docs/adr/008-hybrid-ner-and-context-enhancers.md)** | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy** | Accepted | Połączenie walidatorów regex/checksum, reguł kontekstowych (`ContextRuleEnhancer` niwelujących *capitalization bias*) oraz opcjonalnego adaptera Transformer NER (`HerBERT` / `GLiNER`). |
 | **[ADR-009](docs/adr/009-pdf-extract-then-anonymize.md)** | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Blokada wysyłki surowych plików binarnych PDF do LLM; ekstrakcja czystego tekstu z odrzuceniem metadanych XMP/Info oraz `HardStop` dla skanów/obrazów przy braku lokalnego OCR. |

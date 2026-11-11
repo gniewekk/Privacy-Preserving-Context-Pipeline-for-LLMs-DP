@@ -29,6 +29,7 @@ from domain.models import (
     Permission,
     SecurityContext,
     SecurityPrincipal,
+    ToolCall,
     ToolCallPayload,
 )
 from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
@@ -59,6 +60,7 @@ __all__ = [
     "SecurityContext",
     "SecurityPrincipal",
     "TokenExpiredError",
+    "ToolCall",
     "ToolCallPayload",
     "UnauthorizedVaultAccessError",
     "UnsupportedMediaWithPotentialPIIError",

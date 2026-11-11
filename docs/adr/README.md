@@ -13,7 +13,7 @@ This directory contains the Architecture Decision Records (ADRs) governing the d
 | [ADR-005](005-memento-state-restoration.md) | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | Scenarios 1, 2, 5 |
 | [ADR-006](006-streaming-proxy-placeholder-buffering.md) | Streaming Response Detokenization via Placeholder Window Buffering | **Pipes & Filters (Streaming)** | Accepted | Scenarios 1, 2, 6 |
 | [ADR-007](007-anonymized-agentic-tool-calling.md) | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Scenarios 1, 2, 3 + Agentic Workflows |
-| [ADR-008](008-hybrid-ner-and-context-enhancers.md) | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy + Composite** | Accepted | Scenarios 1, 4, 6 |
+| [ADR-008](008-hybrid-ner-and-context-enhancers.md) | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy** | Accepted | Scenarios 1, 4, 6 |
 | [ADR-009](009-pdf-extract-then-anonymize.md) | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Scenarios 1, 3 + Multimodal Inputs |
 
 ---

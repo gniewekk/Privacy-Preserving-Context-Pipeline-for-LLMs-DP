@@ -1,4 +1,4 @@
-"""Strategy and Composite pattern implementations for PII/PHI detection (English & Polish)."""
+"""Strategy pattern implementations for PII/PHI detection (English & Polish)."""
 
 from detectors.base import (
     DetectorRegistry,
@@ -6,10 +6,10 @@ from detectors.base import (
     register_detector,
     resolve_overlapping_spans,
 )
-from detectors.composite import CompositePIIDetector
 from detectors.heuristic import ContextRuleEnhancer, HeuristicPIIDetector
 from detectors.ner import (
     DEFAULT_ENGLISH_NER_MODEL,
+    DEFAULT_POLISH_FINETUNED_NER_MODEL,
     DEFAULT_POLISH_NER_MODEL,
     EnglishTransformerNERDetector,
     NERPIIDetector,
@@ -30,9 +30,9 @@ from detectors.regex import (
 )
 
 __all__ = [
-    "CompositePIIDetector",
     "ContextRuleEnhancer",
     "DEFAULT_ENGLISH_NER_MODEL",
+    "DEFAULT_POLISH_FINETUNED_NER_MODEL",
     "DEFAULT_POLISH_NER_MODEL",
     "DetectorRegistry",
     "EnglishTransformerNERDetector",

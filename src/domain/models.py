@@ -6,15 +6,17 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, override
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class DataClass(StrEnum):
-    """Classification of data sensitivity and regulatory regime."""
+    """Classification of data sensitivity and regulatory regime (ARCHITECTURE.md §6.5)."""
 
+    ANONYMOUS = "ANONYMOUS"
     GENERAL = "GENERAL"
     CONFIDENTIAL = "CONFIDENTIAL"
     FINANCIAL = "FINANCIAL"
+    LEGAL = "LEGAL"
     PHI = "PHI"
     MEDICAL = "PHI"
 
@@ -170,12 +172,24 @@ class AnonymizationResult(BaseModel):
 class ToolCallPayload(BaseModel):
     """Structured LLM ToolCall / FunctionCall payload normalized by PipelineProxy."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     id: str
     name: str
     arguments: dict[str, Any]
-    session_id: str | None = None
+    session_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("session_id", "sessionId"),
+    )
+
+    @property
+    def sessionId(self) -> str | None:
+        """ARCHITECTURE.md (§4) camelCase property alias for `session_id`."""
+        return self.session_id
+
+
+# ARCHITECTURE.md (§4) canonical name alias
+ToolCall = ToolCallPayload
 
 
 class DocumentAttachment(BaseModel):

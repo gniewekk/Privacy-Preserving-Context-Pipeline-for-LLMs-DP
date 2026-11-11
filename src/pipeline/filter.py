@@ -33,6 +33,12 @@ class Pipeline:
         """Return the immutable tuple of configured filters."""
         return self._filters
 
+    def add_filter(self, filter_stage: Filter) -> Pipeline:
+        """Return a new immutable Pipeline with `filter_stage` appended (ARCHITECTURE.md §3.1)."""
+        return Pipeline((*self._filters, filter_stage))
+
+    addFilter = add_filter
+
     def execute(self, context: PipelineContext) -> PipelineContext:
         """Execute all filters sequentially with fail-closed short-circuiting on exception."""
         current = context
@@ -40,3 +46,8 @@ class Pipeline:
             current = stage.process(current)
             current = current.with_filter_record(stage.filter_name)
         return current
+
+
+# ARCHITECTURE.md (§3.1 & §4) canonical name aliases
+Pipe = Pipeline
+InboundPipeline = Pipeline

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from domain.models import (
     AnonymizationRequest,
@@ -77,6 +77,15 @@ class StrategyRegistry:
             return self._default_strategy
         raise KeyError(f"No AnonymizationStrategy registered for {entity_type!r}.")
 
+    def select(
+        self,
+        entity: DetectedEntity | EntityType,
+        policy: Any = None,
+    ) -> AnonymizationStrategy:
+        """Select an AnonymizationStrategy for `entity` (ARCHITECTURE.md §3.2 StrategySelector)."""
+        target_type = entity.entity_type if isinstance(entity, DetectedEntity) else entity
+        return self.resolve(target_type)
+
     def has_reversible_strategy(self) -> bool:
         """Return True if any bound or default strategy is reversible."""
         if self._default_strategy is not None and self._default_strategy.is_reversible():
@@ -113,6 +122,12 @@ class PlaceholderTokenStrategy(AnonymizationStrategy):
     def is_reversible(self) -> bool:
         return self._reversible
 
+    def can_reverse(self) -> bool:
+        """ARCHITECTURE.md (§3.2) method alias for `is_reversible()`."""
+        return self._reversible
+
+    canReverse = can_reverse
+
     def anonymize(
         self,
         entity: DetectedEntity,
@@ -145,6 +160,12 @@ class MaskingStrategy(AnonymizationStrategy):
     def is_reversible(self) -> bool:
         return False
 
+    def can_reverse(self) -> bool:
+        """ARCHITECTURE.md (§3.2) method alias for `is_reversible()`."""
+        return False
+
+    canReverse = can_reverse
+
     def anonymize(
         self,
         entity: DetectedEntity,
@@ -160,3 +181,8 @@ class MaskingStrategy(AnonymizationStrategy):
             entity_type=entity.entity_type,
             is_reversible=False,
         )
+
+
+# ARCHITECTURE.md (§3.2 & §4) canonical name aliases
+StrategySelector = StrategyRegistry
+TokenizationStrategy = PlaceholderTokenStrategy

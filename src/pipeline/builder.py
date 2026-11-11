@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Self
 
 from detectors.base import PIIDetector
+from detectors.heuristic import ContextRuleEnhancer
 from domain.exceptions import PipelineConfigurationError
 from domain.models import AuditLevel, DataClass, EntityType, PDFExtractionPolicy
 from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
@@ -31,6 +33,7 @@ class PipelineBuilder:
         self._data_class: DataClass = DataClass.GENERAL
         self._audit_level: AuditLevel = AuditLevel.FULL
         self._detectors: list[PIIDetector] = []
+        self._enhancer: ContextRuleEnhancer | None = None
         self._strategies: dict[EntityType, AnonymizationStrategy] = {}
         self._default_strategy: AnonymizationStrategy = PlaceholderTokenStrategy(
             reversible=False
@@ -39,9 +42,11 @@ class PipelineBuilder:
         self._vault_proxy: Any | None = None
         self._memento_caretaker: Any | None = None
         self._k_anonymity_threshold: int | None = None
+        self._re_id_risk_threshold: float | None = None
         self._pdf_policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR
         self._ocr_engine: LocalOCREngine | None = None
         self._audit_logger: AuditLogger | None = None
+        self._risk_filters: list[Filter] = []
         self._custom_filters: list[Filter] = []
 
     def for_data_class(self, data_class: DataClass) -> Self:
@@ -59,6 +64,16 @@ class PipelineBuilder:
         self._detectors.append(detector)
         return self
 
+    def with_detectors(self, detectors: Sequence[PIIDetector]) -> Self:
+        """Register multiple PIIDetector strategies in the detection stage."""
+        self._detectors.extend(detectors)
+        return self
+
+    def with_context_enhancer(self, enhancer: ContextRuleEnhancer) -> Self:
+        """Configure the ContextRuleEnhancer used by DetectionFilter."""
+        self._enhancer = enhancer
+        return self
+
     def with_strategy(
         self,
         entity_type: EntityType,
@@ -71,6 +86,22 @@ class PipelineBuilder:
     def with_default_strategy(self, strategy: AnonymizationStrategy) -> Self:
         """Configure the fallback AnonymizationStrategy for unmapped entity types."""
         self._default_strategy = strategy
+        return self
+
+    def with_anonymization_strategy(
+        self,
+        entity_or_strategy: EntityType | AnonymizationStrategy,
+        strategy: AnonymizationStrategy | None = None,
+    ) -> Self:
+        """Configure a default or entity-specific AnonymizationStrategy (ARCHITECTURE.md §3.3)."""
+        if isinstance(entity_or_strategy, EntityType):
+            if strategy is None:
+                raise PipelineConfigurationError(
+                    "Strategy instance is required when binding to an EntityType."
+                )
+            self._strategies[entity_or_strategy] = strategy
+        else:
+            self._default_strategy = entity_or_strategy
         return self
 
     def with_residency_policy(self, policy: ResidencyPolicy) -> Self:
@@ -97,6 +128,15 @@ class PipelineBuilder:
         self._k_anonymity_threshold = k
         return self
 
+    def with_re_id_risk_threshold(self, threshold: float) -> Self:
+        """Configure maximum acceptable re-identification risk threshold (ARCHITECTURE.md §3.3)."""
+        if not (0.0 < threshold <= 1.0):
+            raise PipelineConfigurationError(
+                f"Re-identification risk threshold must be in (0.0, 1.0], got {threshold}."
+            )
+        self._re_id_risk_threshold = threshold
+        return self
+
     def with_pdf_extraction_policy(
         self,
         policy: PDFExtractionPolicy,
@@ -116,10 +156,22 @@ class PipelineBuilder:
         self._audit_logger = audit_logger
         return self
 
+    def with_risk_filter(self, risk_filter: Filter) -> Self:
+        """Register a RiskAssessmentFilter stage between DetectionFilter and AnonymizationFilter."""
+        self._risk_filters.append(risk_filter)
+        return self
+
     def with_custom_filter(self, custom_filter: Filter) -> Self:
         """Append an additional stateless Filter stage."""
         self._custom_filters.append(custom_filter)
         return self
+
+    # ARCHITECTURE.md (§3.3) camelCase builder method aliases
+    forDataClass = for_data_class
+    withAuditLevel = with_audit_level
+    withResidencyPolicy = with_residency_policy
+    withAnonymizationStrategy = with_anonymization_strategy
+    withReIdRiskThreshold = with_re_id_risk_threshold
 
     def build(self) -> Pipeline:
         """Validate build-time security invariants and return an immutable Pipeline."""
@@ -154,7 +206,10 @@ class PipelineBuilder:
                 "Reversible tokenization strategy requires `vault_proxy` and `memento_caretaker`."
             )
 
-        # Assemble filters in canonical deterministic security order
+        # Assemble filters in canonical deterministic security order (ADR-001 & ADR-003):
+        # DocumentExtractorFilter -> LanguageDetectorFilter -> DetectionFilter ->
+        # [RiskAssessmentFilter(s)] -> AnonymizationFilter -> ResidencyGate ->
+        # [CustomFilter(s)] -> AuditContextFilter
         stages: list[Filter] = [
             DocumentExtractorFilter(
                 policy=self._pdf_policy,
@@ -162,10 +217,17 @@ class PipelineBuilder:
                 audit_logger=self._audit_logger,
             ),
             LanguageDetectorFilter(),
-            DetectionFilter(detectors=self._detectors),
+            DetectionFilter(
+                detectors=self._detectors,
+                k_anonymity_threshold=self._k_anonymity_threshold,
+                re_id_risk_threshold=self._re_id_risk_threshold,
+                enhancer=self._enhancer,
+            ),
+            *self._risk_filters,
             AnonymizationFilter(
                 strategy_registry=registry,
                 detectors=self._detectors,
+                enhancer=self._enhancer,
             ),
         ]
 
