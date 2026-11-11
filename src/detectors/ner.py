@@ -142,7 +142,7 @@ class NERPIIDetector(PIIDetector):
                     end=end_obj,
                     raw_value=original_text[start_obj:end_obj],
                     confidence=adjusted_score,
-                    data_class=DataClass.CONFIDENTIAL,
+                    data_class=DataClass.GENERAL,
                     detector_id=self.detector_id,
                 )
             )

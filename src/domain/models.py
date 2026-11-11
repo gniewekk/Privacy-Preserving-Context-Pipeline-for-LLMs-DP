@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, override
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DataClass(StrEnum):
@@ -14,11 +14,9 @@ class DataClass(StrEnum):
 
     ANONYMOUS = "ANONYMOUS"
     GENERAL = "GENERAL"
-    CONFIDENTIAL = "CONFIDENTIAL"
     FINANCIAL = "FINANCIAL"
     LEGAL = "LEGAL"
-    PHI = "PHI"
-    MEDICAL = "PHI"
+    MEDICAL = "MEDICAL"
 
 
 class AuditLevel(StrEnum):
@@ -64,7 +62,7 @@ class EntityType(StrEnum):
 
 
 class Permission(StrEnum):
-    """Granular RBAC permissions enforced by VaultProtectionProxy."""
+    """Granular RBAC permissions enforced by VaultProxy."""
 
     TOKENIZE = "TOKENIZE"
     DETOKENIZE = "DETOKENIZE"
@@ -106,7 +104,7 @@ class DetectedEntity(BaseModel):
     end: int = Field(ge=0)
     raw_value: str = Field(repr=False)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    data_class: DataClass = DataClass.CONFIDENTIAL
+    data_class: DataClass = DataClass.GENERAL
     detector_id: str = "default"
 
     @override
@@ -169,27 +167,15 @@ class AnonymizationResult(BaseModel):
     key_id: str | None = None
 
 
-class ToolCallPayload(BaseModel):
-    """Structured LLM ToolCall / FunctionCall payload normalized by PipelineProxy."""
+class ToolCall(BaseModel):
+    """Structured LLM ToolCall payload normalized by PipelineProxy (§4)."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str
     name: str
     arguments: dict[str, Any]
-    session_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("session_id", "sessionId"),
-    )
-
-    @property
-    def sessionId(self) -> str | None:
-        """ARCHITECTURE.md (§4) camelCase property alias for `session_id`."""
-        return self.session_id
-
-
-# ARCHITECTURE.md (§4) canonical name alias
-ToolCall = ToolCallPayload
+    session_id: str | None = None
 
 
 class DocumentAttachment(BaseModel):

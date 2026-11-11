@@ -11,7 +11,7 @@ from domain.models import (
     DocumentAttachment,
     EndpointMetadata,
     SecurityPrincipal,
-    ToolCallPayload,
+    ToolCall,
 )
 from pipeline.context import PipelineContext
 from pipeline.filter import Pipeline
@@ -55,14 +55,14 @@ class PipelineProxy:
 
     def process_tool_call(
         self,
-        tool_call: ToolCallPayload,
+        tool_call: ToolCall,
         *,
         request_id: str | None = None,
         tenant_id: str = "default",
         principal: SecurityPrincipal | None = None,
         target_endpoint: EndpointMetadata | None = None,
     ) -> PipelineContext:
-        """Sanitize a structured ToolCallPayload recursively while preserving JSON schema."""
+        """Sanitize a structured ToolCall recursively while preserving JSON schema."""
         ctx = PipelineContext(
             request_id=request_id or f"req_{uuid.uuid4().hex[:12]}",
             session_id=tool_call.session_id,

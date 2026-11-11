@@ -28,10 +28,10 @@ from domain.models import (
     PDFExtractionPolicy,
     SecurityContext,
 )
-from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
+from domain.protocols import AuditWriter, LocalOCREngine, ResidencyPolicyEngine
 from pipeline.context import PipelineContext
 from pipeline.filter import Filter
-from strategies.base import StrategyRegistry
+from strategies.base import StrategySelector
 
 # Regex helpers for local, zero-network PDF metadata stripping & text stream extraction
 _PDF_XMP_PATTERN = re.compile(rb"<x:xmpmeta\b.*?</x:xmpmeta>", re.DOTALL | re.IGNORECASE)
@@ -170,20 +170,20 @@ class DocumentExtractorFilter(Filter):
         self,
         policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR,
         ocr_engine: LocalOCREngine | None = None,
-        audit_logger: AuditLogger | None = None,
+        audit_writer: AuditWriter | None = None,
     ) -> None:
         self._policy = policy
         self._ocr_engine = ocr_engine
-        self._audit_logger = audit_logger
+        self._audit_writer = audit_writer
 
     @property
     def filter_name(self) -> str:
         return "DocumentExtractorFilter"
 
     def _record_block_audit(self, context: PipelineContext, reason: str) -> None:
-        if self._audit_logger is None:
+        if self._audit_writer is None:
             return
-        self._audit_logger.record(
+        self._audit_writer.record(
             AuditEvent(
                 event_id=f"evt_{uuid.uuid4().hex[:12]}",
                 timestamp=datetime.now(UTC),
@@ -271,8 +271,8 @@ class LanguageDetectorFilter(Filter):
         return context.model_copy(update={"language": detected_lang})
 
 
-class DetectionFilter(Filter):
-    """Stateless filter orchestrating registered PIIDetector strategies without branching."""
+class PIIDetectorFilter(Filter):
+    """Stateless filter orchestrating registered PIIDetector strategies (ARCHITECTURE.md §3.1)."""
 
     def __init__(
         self,
@@ -288,7 +288,7 @@ class DetectionFilter(Filter):
 
     @property
     def filter_name(self) -> str:
-        return "DetectionFilter"
+        return "PIIDetectorFilter"
 
     def process(self, context: PipelineContext) -> PipelineContext:
         text = context.current_text
@@ -300,16 +300,16 @@ class DetectionFilter(Filter):
         enhanced = self._enhancer.enhance(text, all_detected) if all_detected else ()
         merged = resolve_overlapping_spans(enhanced)
         elevated_class = context.data_class
-        if any(e.data_class == DataClass.PHI for e in merged):
-            elevated_class = DataClass.PHI
+        if any(e.data_class == DataClass.MEDICAL for e in merged):
+            elevated_class = DataClass.MEDICAL
         elif context.tool_call is not None:
             for arg_str in _collect_json_strings(context.tool_call.arguments):
                 for detector in self._detectors:
                     if any(
-                        e.data_class == DataClass.PHI
+                        e.data_class == DataClass.MEDICAL
                         for e in detector.detect(arg_str, language=context.language)
                     ):
-                        elevated_class = DataClass.PHI
+                        elevated_class = DataClass.MEDICAL
                         break
 
         effective_k = (
@@ -334,15 +334,15 @@ class DetectionFilter(Filter):
 
 
 class AnonymizationFilter(Filter):
-    """Stateless filter delegating PII transformation to StrategyRegistry."""
+    """Stateless filter delegating PII transformation to StrategySelector (ARCHITECTURE.md §3.2)."""
 
     def __init__(
         self,
-        strategy_registry: StrategyRegistry,
+        strategy_selector: StrategySelector,
         detectors: Sequence[PIIDetector] = (),
         enhancer: ContextRuleEnhancer | None = None,
     ) -> None:
-        self._strategy_registry = strategy_registry
+        self._strategy_selector = strategy_selector
         self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
         self._enhancer = enhancer or ContextRuleEnhancer()
 
@@ -376,7 +376,7 @@ class AnonymizationFilter(Filter):
         for entity in ordered_Asc:
             idx = counters.get(entity.entity_type, 0) + 1
             counters[entity.entity_type] = idx
-            strategy = self._strategy_registry.resolve(entity.entity_type)
+            strategy = self._strategy_selector.select(entity, sec_context)
             req = AnonymizationRequest(
                 request_id=context.request_id,
                 tenant_id=context.tenant_id,
@@ -470,20 +470,20 @@ class AnonymizationFilter(Filter):
         )
 
 
-class ResidencyGate(Filter):
-    """Enforces regulatory data residency via injected ResidencyPolicy without hardcoded regions."""
+class ResidencyPolicyFilter(Filter):
+    """Enforces data residency via an injected ResidencyPolicyEngine (ARCHITECTURE.md §3.1)."""
 
     def __init__(
         self,
-        policy: ResidencyPolicy,
-        audit_logger: AuditLogger | None = None,
+        policy: ResidencyPolicyEngine,
+        audit_writer: AuditWriter | None = None,
     ) -> None:
         self._policy = policy
-        self._audit_logger = audit_logger
+        self._audit_writer = audit_writer
 
     @property
     def filter_name(self) -> str:
-        return "ResidencyGate"
+        return "ResidencyPolicyFilter"
 
     def process(self, context: PipelineContext) -> PipelineContext:
         if context.target_endpoint is None:
@@ -491,8 +491,8 @@ class ResidencyGate(Filter):
 
         allowed = self._policy.is_allowed(context.data_class, context.target_endpoint)
         if not allowed:
-            if self._audit_logger is not None:
-                self._audit_logger.record(
+            if self._audit_writer is not None:
+                self._audit_writer.record(
                     AuditEvent(
                         event_id=f"evt_{uuid.uuid4().hex[:12]}",
                         timestamp=datetime.now(UTC),
@@ -521,16 +521,16 @@ class ResidencyGate(Filter):
 class AuditContextFilter(Filter):
     """Records inbound pipeline completion metadata without logging raw PII."""
 
-    def __init__(self, audit_logger: AuditLogger | None = None) -> None:
-        self._audit_logger = audit_logger
+    def __init__(self, audit_writer: AuditWriter | None = None) -> None:
+        self._audit_writer = audit_writer
 
     @property
     def filter_name(self) -> str:
         return "AuditContextFilter"
 
     def process(self, context: PipelineContext) -> PipelineContext:
-        if self._audit_logger is not None and context.audit_level != AuditLevel.NONE:
-            self._audit_logger.record(
+        if self._audit_writer is not None and context.audit_level != AuditLevel.NONE:
+            self._audit_writer.record(
                 AuditEvent(
                     event_id=f"evt_{uuid.uuid4().hex[:12]}",
                     timestamp=datetime.now(UTC),
@@ -545,9 +545,3 @@ class AuditContextFilter(Filter):
                 )
             )
         return context
-
-
-# ARCHITECTURE.md (§3.1 & §4) canonical filter aliases
-LanguageDetector = LanguageDetectorFilter
-PIIDetectorFilter = DetectionFilter
-ResidencyPolicyFilter = ResidencyGate

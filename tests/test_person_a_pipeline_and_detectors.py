@@ -5,9 +5,9 @@ Covers:
    and `PolishTransformerNERDetector` (`allegro/herbert-base-cased` / NKJP & KPWr labels)
 2. Deterministic Regex + Checksums for Poland (`PESEL`, `NIP`, `REGON`, `IBAN`, `ID_CARD`)
    and USA (`SSN`, `ITIN`, `EIN`, `ABA_ROUTING` Mod-10, `CREDIT_CARD` Luhn Mod-10)
-3. Multi-strategy `DetectionFilter` & `ContextRuleEnhancer` (lowercase, inflected Polish, split)
+3. Multi-strategy `PIIDetectorFilter` & `ContextRuleEnhancer` (lowercase, inflected Polish, split)
 4. `PipelineBuilder` build-time invariants and canonical Pipes & Filters execution
-5. `PipelineProxy` normalization for text, `ToolCallPayload` JSON, and PDF `DocumentExtractorFilter`
+5. `PipelineProxy` normalization for text, `ToolCall` JSON, and PDF `DocumentExtractorFilter`
 6. Zero raw PII leakage in `repr()`, `str()`, and audit logs
 """
 
@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 
+import pipeline as pipeline_pkg
+import strategies as strategies_pkg
 from detectors import (
     DEFAULT_ENGLISH_NER_MODEL,
     DEFAULT_POLISH_FINETUNED_NER_MODEL,
@@ -55,35 +57,26 @@ from domain import (
     PipelineConfigurationError,
     ResidencyViolationError,
     ToolCall,
-    ToolCallPayload,
     UnsupportedMediaWithPotentialPIIError,
 )
 from pipeline import (
-    DetectionFilter,
     Filter,
-    InboundPipeline,
-    LanguageDetector,
-    LanguageDetectorFilter,
     PIIDetectorFilter,
     Pipe,
     Pipeline,
     PipelineBuilder,
     PipelineContext,
     PipelineProxy,
-    ResidencyGate,
-    ResidencyPolicyFilter,
 )
 from strategies import (
     MaskingStrategy,
-    PlaceholderTokenStrategy,
-    StrategyRegistry,
     StrategySelector,
     TokenizationStrategy,
 )
 
 
-class InMemoryAuditLogger:
-    """In-memory AuditLogger test double."""
+class InMemoryAuditWriter:
+    """In-memory AuditWriter test double."""
 
     def __init__(self) -> None:
         self._events: list[AuditEvent] = []
@@ -95,11 +88,11 @@ class InMemoryAuditLogger:
         return tuple(self._events)
 
 
-class EUOnlyResidencyPolicy:
-    """ResidencyPolicy allowing PHI only on EU-compliant endpoints."""
+class EUOnlyResidencyPolicyEngine:
+    """ResidencyPolicyEngine allowing MEDICAL data only on EU-compliant endpoints."""
 
     def is_allowed(self, data_class: DataClass, endpoint: EndpointMetadata) -> bool:
-        if data_class == DataClass.PHI:
+        if data_class == DataClass.MEDICAL:
             return endpoint.is_eu_compliant
         return True
 
@@ -257,9 +250,9 @@ def test_polish_and_us_official_checksum_validators() -> None:
     assert ssn_values == ["123-45-6789"]
 
 
-def test_detection_filter_and_context_rule_enhancer_resilience() -> None:
-    """Verify DetectionFilter + ContextRuleEnhancer with both EN and PL Transformer NERs."""
-    detection_filter = DetectionFilter(
+def test_pii_detector_filter_and_context_rule_enhancer_resilience() -> None:
+    """Verify PIIDetectorFilter + ContextRuleEnhancer with both EN and PL Transformer NERs."""
+    pii_detector_filter = PIIDetectorFilter(
         detectors=[
             RegexPIIDetector(),
             EnglishTransformerNERDetector(ner_pipeline=_fake_english_bert_ner_pipeline),
@@ -273,7 +266,7 @@ def test_detection_filter_and_context_rule_enhancer_resilience() -> None:
         "Rozmawiałem z janem kowalskim oraz klientem j. nowakiem "
         "zamieszkałym przy ul. lipowej 12, PESEL 44051401458."
     )
-    pl_ctx = detection_filter.process(
+    pl_ctx = pii_detector_filter.process(
         PipelineContext(request_id="req_pl", raw_text=pl_text, language="pl")
     )
     pl_values = {e.raw_value for e in pl_ctx.detected_entities}
@@ -283,7 +276,7 @@ def test_detection_filter_and_context_rule_enhancer_resilience() -> None:
     assert "44051401458" in pl_values
 
     en_text = "Patient John Smith at 221B Baker Street, SSN 123-45-6789, EIN 12-3456789."
-    en_ctx = detection_filter.process(
+    en_ctx = pii_detector_filter.process(
         PipelineContext(request_id="req_en", raw_text=en_text, language="en")
     )
     en_values = {e.raw_value for e in en_ctx.detected_entities}
@@ -319,14 +312,14 @@ def test_pipeline_builder_invariants_and_fail_fast_validation() -> None:
             .for_data_class(DataClass.MEDICAL)
             .with_audit_level(AuditLevel.NONE)
             .with_detector(RegexPIIDetector())
-            .with_residency_policy(EUOnlyResidencyPolicy())
+            .with_residency_policy(EUOnlyResidencyPolicyEngine())
             .build()
         )
 
-    with pytest.raises(PipelineConfigurationError, match="ResidencyPolicy"):
+    with pytest.raises(PipelineConfigurationError, match="ResidencyPolicyEngine"):
         (
             PipelineBuilder()
-            .for_data_class(DataClass.PHI)
+            .for_data_class(DataClass.MEDICAL)
             .with_detector(RegexPIIDetector())
             .build()
         )
@@ -335,14 +328,14 @@ def test_pipeline_builder_invariants_and_fail_fast_validation() -> None:
         (
             PipelineBuilder()
             .with_detector(RegexPIIDetector())
-            .with_default_strategy(PlaceholderTokenStrategy(reversible=True))
+            .with_anonymization_strategy(TokenizationStrategy(reversible=True))
             .build()
         )
 
 
 def test_inbound_pipeline_proxy_bilingual_text_and_tool_call_sanitization() -> None:
     """Verify PipelineProxy routes EN and PL prompts to their respective Transformer NERs."""
-    audit_logger = InMemoryAuditLogger()
+    audit_writer = InMemoryAuditWriter()
     detectors: list[PIIDetector] = [
         RegexPIIDetector(),
         EnglishTransformerNERDetector(ner_pipeline=_fake_english_bert_ner_pipeline),
@@ -352,9 +345,11 @@ def test_inbound_pipeline_proxy_bilingual_text_and_tool_call_sanitization() -> N
     pipeline = (
         PipelineBuilder()
         .with_detectors(detectors)
-        .with_strategy(EntityType.PESEL, MaskingStrategy(mask_char="*", preserve_length=True))
-        .with_default_strategy(PlaceholderTokenStrategy(reversible=False))
-        .with_audit_logger(audit_logger)
+        .with_anonymization_strategy(
+            EntityType.PESEL, MaskingStrategy(mask_char="*", preserve_length=True)
+        )
+        .with_anonymization_strategy(TokenizationStrategy(reversible=False))
+        .with_audit_writer(audit_writer)
         .build()
     )
     proxy = PipelineProxy(pipeline)
@@ -382,8 +377,8 @@ def test_inbound_pipeline_proxy_bilingual_text_and_tool_call_sanitization() -> N
     assert "***********" in pl_ctx.sanitized_text
     assert "<LOCATION_1>" in pl_ctx.sanitized_text
 
-    # 3. Structured ToolCallPayload recursive sanitization
-    tool_call = ToolCallPayload(
+    # 3. Structured ToolCall recursive sanitization
+    tool_call = ToolCall(
         id="call_01",
         name="lookup_customer_record",
         arguments={
@@ -403,12 +398,12 @@ def test_inbound_pipeline_proxy_bilingual_text_and_tool_call_sanitization() -> N
 
 def test_pdf_document_extractor_filter_metadata_stripping_and_fail_closed_on_scan() -> None:
     """Verify ADR-009: PDF metadata is stripped, text anonymized, and scanned PDFs fail closed."""
-    audit_logger = InMemoryAuditLogger()
+    audit_writer = InMemoryAuditWriter()
     pipeline = (
         PipelineBuilder()
         .with_detector(RegexPIIDetector())
         .with_detector(EnglishTransformerNERDetector(ner_pipeline=_fake_english_bert_ner_pipeline))
-        .with_audit_logger(audit_logger)
+        .with_audit_writer(audit_writer)
         .build()
     )
     proxy = PipelineProxy(pipeline)
@@ -442,18 +437,18 @@ def test_pdf_document_extractor_filter_metadata_stripping_and_fail_closed_on_sca
         proxy.process_text("", attachments=[scanned_attachment])
 
 
-def test_residency_gate_blocks_non_eu_dispatch_for_phi() -> None:
-    """Verify ResidencyGate raises ResidencyViolationError when PHI targets a non-EU endpoint."""
-    audit_logger = InMemoryAuditLogger()
+def test_residency_policy_filter_blocks_non_eu_dispatch_for_medical() -> None:
+    """Verify ResidencyPolicyFilter blocks MEDICAL data targeting a non-EU endpoint."""
+    audit_writer = InMemoryAuditWriter()
     pipeline = (
         PipelineBuilder()
-        .for_data_class(DataClass.PHI)
+        .for_data_class(DataClass.MEDICAL)
         .with_detector(RegexPIIDetector())
-        .with_residency_policy(EUOnlyResidencyPolicy())
-        .with_audit_logger(audit_logger)
+        .with_residency_policy(EUOnlyResidencyPolicyEngine())
+        .with_audit_writer(audit_writer)
         .build()
     )
-    proxy = PipelineProxy(pipeline, default_data_class=DataClass.PHI)
+    proxy = PipelineProxy(pipeline, default_data_class=DataClass.MEDICAL)
 
     us_endpoint = EndpointMetadata(
         provider_id="external_llm",
@@ -497,8 +492,8 @@ def test_mixed_case_sentence_lowercase_fallback_in_ner_detector() -> None:
 
 
 def test_polish_tool_call_language_detection_and_entity_tracking() -> None:
-    """Verify Polish ToolCallPayload triggers 'pl' detection and tracks detected_entities."""
-    audit_logger = InMemoryAuditLogger()
+    """Verify Polish ToolCall triggers 'pl' detection and tracks detected_entities."""
+    audit_writer = InMemoryAuditWriter()
     detectors: list[PIIDetector] = [
         RegexPIIDetector(),
         EnglishTransformerNERDetector(ner_pipeline=_fake_english_bert_ner_pipeline),
@@ -508,12 +503,12 @@ def test_polish_tool_call_language_detection_and_entity_tracking() -> None:
     pipeline = (
         PipelineBuilder()
         .with_detectors(detectors)
-        .with_audit_logger(audit_logger)
+        .with_audit_writer(audit_writer)
         .build()
     )
     proxy = PipelineProxy(pipeline)
 
-    pl_tool_call = ToolCallPayload(
+    pl_tool_call = ToolCall(
         id="call_pl_01",
         name="pobierz_dane_pacjenta",
         arguments={
@@ -533,11 +528,11 @@ def test_polish_tool_call_language_detection_and_entity_tracking() -> None:
     assert "<PESEL_1>" in sanitized_desc
     assert len(ctx.detected_entities) == 3
     assert len(ctx.anonymization_results) == 3
-    assert audit_logger.events()[-1].reason == "Anonymized 3 entities."
+    assert audit_writer.events()[-1].reason == "Anonymized 3 entities."
 
 
-def test_pipeline_builder_risk_filter_slot_and_k_anonymity_propagation() -> None:
-    """Verify RiskAssessmentFilter executes between DetectionFilter and AnonymizationFilter."""
+def test_pipeline_builder_risk_assessment_filter_slot_and_k_anonymity_propagation() -> None:
+    """Verify RiskAssessmentFilter executes between PIIDetectorFilter and AnonymizationFilter."""
 
     class SpyRiskFilter(Filter):
         def __init__(self) -> None:
@@ -560,7 +555,7 @@ def test_pipeline_builder_risk_filter_slot_and_k_anonymity_propagation() -> None
         PipelineBuilder()
         .with_detector(RegexPIIDetector())
         .with_k_anonymity_threshold(5)
-        .with_risk_filter(spy_risk)
+        .with_risk_assessment_filter(spy_risk)
         .build()
     )
     proxy = PipelineProxy(pipeline)
@@ -570,7 +565,7 @@ def test_pipeline_builder_risk_filter_slot_and_k_anonymity_propagation() -> None
     assert filter_names == [
         "DocumentExtractorFilter",
         "LanguageDetectorFilter",
-        "DetectionFilter",
+        "PIIDetectorFilter",
         "SpyRiskFilter",
         "AnonymizationFilter",
         "AuditContextFilter",
@@ -592,8 +587,8 @@ def test_poc_1_ner_and_middleware_latency_budget_under_200ms() -> None:
         PipelineBuilder()
         .with_detectors(detectors)
         .with_context_enhancer(ContextRuleEnhancer())
-        .with_strategy(EntityType.PESEL, MaskingStrategy())
-        .with_default_strategy(PlaceholderTokenStrategy(reversible=False))
+        .with_anonymization_strategy(EntityType.PESEL, MaskingStrategy())
+        .with_anonymization_strategy(TokenizationStrategy(reversible=False))
         .build()
     )
     proxy = PipelineProxy(pipeline)
@@ -631,7 +626,7 @@ def test_poc_2_detection_resilience_standalone_ner_vs_hybrid_context_enhancer() 
         ner_pipeline=_fake_polish_herbert_ner_pipeline,
         enable_lowercase_fallback=False,
     )
-    hybrid_filter = DetectionFilter(
+    hybrid_filter = PIIDetectorFilter(
         detectors=[
             RegexPIIDetector(),
             PolishTransformerNERDetector(
@@ -652,7 +647,7 @@ def test_poc_2_detection_resilience_standalone_ner_vs_hybrid_context_enhancer() 
     ner_only_entities = standalone_cased_ner.detect(challenging_text, language="pl")
     assert len(ner_only_entities) == 0
 
-    # Multi-strategy DetectionFilter (NER + ContextRuleEnhancer + Heuristic + Regex) detects all 4
+    # Multi-strategy PIIDetectorFilter (NER + ContextRuleEnhancer + Heuristic + Regex) detects all 4
     hybrid_ctx = hybrid_filter.process(
         PipelineContext(request_id="req_poc2", raw_text=challenging_text, language="pl")
     )
@@ -739,36 +734,43 @@ def test_poc_3_pdf_flatedecode_extraction_and_local_ocr_policy() -> None:
     assert "<PESEL_1>" in ocr_ctx.sanitized_text
 
 
-def test_architecture_md_naming_and_api_compatibility() -> None:
-    """Verify 100% compatibility with all class, method, and enum names in ARCHITECTURE.md."""
-    # 1. Domain & Strategy & Pipeline class aliases
-    assert ToolCall is ToolCallPayload
-    assert Pipe is Pipeline
-    assert InboundPipeline is Pipeline
-    assert LanguageDetector is LanguageDetectorFilter
-    assert PIIDetectorFilter is not None
-    assert ResidencyPolicyFilter is ResidencyGate
-    assert StrategySelector is StrategyRegistry
-    assert TokenizationStrategy is PlaceholderTokenStrategy
-    assert DataClass.LEGAL == "LEGAL"
-    assert DataClass.ANONYMOUS == "ANONYMOUS"
+def test_architecture_md_canonical_naming_without_aliases() -> None:
+    """Verify public names follow ARCHITECTURE.md and legacy aliases are not exported."""
+    # 1. Canonical classes exist; legacy alias names are gone
+    assert issubclass(Pipeline, Pipe)
+    for legacy_name in (
+        "DetectionFilter",
+        "InboundPipeline",
+        "LanguageDetector",
+        "ResidencyGate",
+    ):
+        assert not hasattr(pipeline_pkg, legacy_name)
+    for legacy_name in ("PlaceholderTokenStrategy", "StrategyRegistry"):
+        assert not hasattr(strategies_pkg, legacy_name)
+    assert set(DataClass) == {
+        DataClass.ANONYMOUS,
+        DataClass.GENERAL,
+        DataClass.FINANCIAL,
+        DataClass.LEGAL,
+        DataClass.MEDICAL,
+    }
 
-    # 2. ToolCall camelCase sessionId alias (ARCHITECTURE.md §4)
+    # 2. ToolCall uses the canonical snake_case field `session_id` (ARCHITECTURE.md §4)
     tc = ToolCall(
         id="tc_1",
         name="get_birth_date",
         arguments={"user_id": "Jan Kowalski"},
-        sessionId="sess_arch_1",
+        session_id="sess_arch_1",
     )
     assert tc.session_id == "sess_arch_1"
-    assert tc.sessionId == "sess_arch_1"
+    assert not hasattr(tc, "sessionId")
 
-    # 3. StrategySelector.select() & canReverse() (ARCHITECTURE.md §3.2)
+    # 3. StrategySelector.select() & can_reverse() (ARCHITECTURE.md §3.2)
     mask_strat = MaskingStrategy()
     tok_strat = TokenizationStrategy(reversible=False)
     assert mask_strat.can_reverse() is False
-    assert mask_strat.canReverse() is False
     assert tok_strat.can_reverse() is False
+    assert not hasattr(mask_strat, "is_reversible")
     selector = StrategySelector(
         strategies={EntityType.PESEL: mask_strat},
         default_strategy=tok_strat,
@@ -780,15 +782,17 @@ def test_architecture_md_naming_and_api_compatibility() -> None:
         raw_value="44051401458",
     )
     assert selector.select(sample_entity) is mask_strat
+    assert not hasattr(selector, "resolve")
 
-    # 4. PipelineBuilder fluent API from ARCHITECTURE.md §3.3
+    # 4. PipelineBuilder fluent API from ARCHITECTURE.md §3.3 (snake_case only)
+    assert not hasattr(PipelineBuilder, "forDataClass")
     built_pipe = (
         PipelineBuilder()
-        .forDataClass(DataClass.MEDICAL)
-        .withResidencyPolicy(EUOnlyResidencyPolicy())
-        .withAnonymizationStrategy(EntityType.PESEL, mask_strat)
-        .withReIdRiskThreshold(0.05)
-        .withAuditLevel(AuditLevel.FULL)
+        .for_data_class(DataClass.MEDICAL)
+        .with_residency_policy(EUOnlyResidencyPolicyEngine())
+        .with_anonymization_strategy(EntityType.PESEL, mask_strat)
+        .with_re_id_risk_threshold(0.05)
+        .with_audit_level(AuditLevel.FULL)
         .with_detector(RegexPIIDetector())
         .build()
     )

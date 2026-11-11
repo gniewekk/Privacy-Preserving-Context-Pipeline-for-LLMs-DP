@@ -30,9 +30,12 @@ from domain.models import (
     SecurityContext,
     SecurityPrincipal,
     ToolCall,
-    ToolCallPayload,
 )
-from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
+from domain.protocols import (
+    AuditWriter,
+    LocalOCREngine,
+    ResidencyPolicyEngine,
+)
 
 __all__ = [
     "AnonymizationRequest",
@@ -40,8 +43,8 @@ __all__ = [
     "AuditAction",
     "AuditEvent",
     "AuditLevel",
-    "AuditLogger",
     "AuditOutcome",
+    "AuditWriter",
     "DataClass",
     "DetectedEntity",
     "DocumentAttachment",
@@ -55,13 +58,12 @@ __all__ = [
     "PipelineConfigurationError",
     "PipelineError",
     "ReIdentificationRiskError",
-    "ResidencyPolicy",
+    "ResidencyPolicyEngine",
     "ResidencyViolationError",
     "SecurityContext",
     "SecurityPrincipal",
     "TokenExpiredError",
     "ToolCall",
-    "ToolCallPayload",
     "UnauthorizedVaultAccessError",
     "UnsupportedMediaWithPotentialPIIError",
     "VaultError",

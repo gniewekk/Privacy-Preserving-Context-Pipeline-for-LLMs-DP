@@ -1,4 +1,4 @@
-"""AnonymizationStrategy protocol, @register_strategy decorator, and StrategyRegistry."""
+"""AnonymizationStrategy protocol, @register_strategy decorator, and StrategySelector."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ class AnonymizationStrategy(Protocol):
         """Unique identifier of the anonymization strategy."""
         ...
 
-    def is_reversible(self) -> bool:
-        """Return True if the strategy produces reversible tokens backed by VaultProtocol."""
+    def can_reverse(self) -> bool:
+        """Return True if the strategy produces reversible tokens backed by TokenizationVault."""
         ...
 
     def anonymize(
@@ -38,8 +38,8 @@ class AnonymizationStrategy(Protocol):
 TStrategy = TypeVar("TStrategy", bound=type[AnonymizationStrategy])
 
 
-class StrategyRegistry:
-    """Declarative registry resolving an AnonymizationStrategy for each EntityType."""
+class StrategySelector:
+    """Selects an AnonymizationStrategy per EntityType (ARCHITECTURE.md §3.2)."""
 
     _registered_classes: dict[str, type[AnonymizationStrategy]] = {}
 
@@ -69,28 +69,24 @@ class StrategyRegistry:
         """Bind `strategy` instance to `entity_type`."""
         self._strategies[entity_type] = strategy
 
-    def resolve(self, entity_type: EntityType) -> AnonymizationStrategy:
-        """Return the strategy registered for `entity_type` or the fallback strategy."""
-        if entity_type in self._strategies:
-            return self._strategies[entity_type]
-        if self._default_strategy is not None:
-            return self._default_strategy
-        raise KeyError(f"No AnonymizationStrategy registered for {entity_type!r}.")
-
     def select(
         self,
         entity: DetectedEntity | EntityType,
         policy: Any = None,
     ) -> AnonymizationStrategy:
-        """Select an AnonymizationStrategy for `entity` (ARCHITECTURE.md §3.2 StrategySelector)."""
+        """Return the strategy bound to the entity's type or the fallback strategy."""
         target_type = entity.entity_type if isinstance(entity, DetectedEntity) else entity
-        return self.resolve(target_type)
+        if target_type in self._strategies:
+            return self._strategies[target_type]
+        if self._default_strategy is not None:
+            return self._default_strategy
+        raise KeyError(f"No AnonymizationStrategy registered for {target_type!r}.")
 
     def has_reversible_strategy(self) -> bool:
         """Return True if any bound or default strategy is reversible."""
-        if self._default_strategy is not None and self._default_strategy.is_reversible():
+        if self._default_strategy is not None and self._default_strategy.can_reverse():
             return True
-        return any(s.is_reversible() for s in self._strategies.values())
+        return any(s.can_reverse() for s in self._strategies.values())
 
     @property
     def registered_strategies(self) -> Mapping[EntityType, AnonymizationStrategy]:
@@ -99,34 +95,28 @@ class StrategyRegistry:
 
 
 def register_strategy(name: str) -> Callable[[TStrategy], TStrategy]:
-    """Class decorator registering an AnonymizationStrategy in StrategyRegistry."""
+    """Class decorator registering an AnonymizationStrategy in StrategySelector."""
 
     def _decorator(strategy_cls: TStrategy) -> TStrategy:
-        StrategyRegistry.register_class(name, strategy_cls)
+        StrategySelector.register_class(name, strategy_cls)
         return strategy_cls
 
     return _decorator
 
 
-@register_strategy("placeholder")
-class PlaceholderTokenStrategy(AnonymizationStrategy):
-    """Deterministic placeholder strategy (`<ENTITY_TYPE_N>`) for inbound pipeline execution."""
+@register_strategy("tokenization")
+class TokenizationStrategy(AnonymizationStrategy):
+    """Deterministic tokenization strategy (`<ENTITY_TYPE_N>`) (ARCHITECTURE.md §3.2)."""
 
     def __init__(self, reversible: bool = False) -> None:
         self._reversible = reversible
 
     @property
     def strategy_id(self) -> str:
-        return "placeholder_token_strategy"
-
-    def is_reversible(self) -> bool:
-        return self._reversible
+        return "tokenization_strategy"
 
     def can_reverse(self) -> bool:
-        """ARCHITECTURE.md (§3.2) method alias for `is_reversible()`."""
         return self._reversible
-
-    canReverse = can_reverse
 
     def anonymize(
         self,
@@ -147,7 +137,7 @@ class PlaceholderTokenStrategy(AnonymizationStrategy):
 
 @register_strategy("masking")
 class MaskingStrategy(AnonymizationStrategy):
-    """Irreversible character masking strategy."""
+    """Irreversible character masking strategy (ARCHITECTURE.md §3.2)."""
 
     def __init__(self, mask_char: str = "*", preserve_length: bool = True) -> None:
         self._mask_char = mask_char
@@ -157,14 +147,8 @@ class MaskingStrategy(AnonymizationStrategy):
     def strategy_id(self) -> str:
         return "masking_strategy"
 
-    def is_reversible(self) -> bool:
-        return False
-
     def can_reverse(self) -> bool:
-        """ARCHITECTURE.md (§3.2) method alias for `is_reversible()`."""
         return False
-
-    canReverse = can_reverse
 
     def anonymize(
         self,
@@ -181,8 +165,3 @@ class MaskingStrategy(AnonymizationStrategy):
             entity_type=entity.entity_type,
             is_reversible=False,
         )
-
-
-# ARCHITECTURE.md (§3.2 & §4) canonical name aliases
-StrategySelector = StrategyRegistry
-TokenizationStrategy = PlaceholderTokenStrategy

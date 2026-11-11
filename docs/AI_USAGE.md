@@ -25,12 +25,12 @@ flowchart LR
 
 ### Stage 2: Constrained Agent Code & Test Generation
 - The developer invokes the AI agent with explicit context: `@AGENTS.md`, the target `ADR`, and the interface contract.
-- The agent is tasked with implementing concrete strategies, builders, or unit/abuse test fixtures while obeying all constraints in `AGENTS.md` (no `if/elif` type switching in filters, no direct `TokenVault` access bypassing `VaultProtectionProxy`, zero hardcoded keys or jurisdictions).
+- The agent is tasked with implementing concrete strategies, builders, or unit/abuse test fixtures while obeying all constraints in `AGENTS.md` (no `if/elif` type switching in filters, no direct `VaultCore` access bypassing `VaultProxy`, zero hardcoded keys or jurisdictions).
 
 ### Stage 3: Human Security, Cryptography & OCP Review
 - Every line of agent-generated code undergoes manual review by the author and at least one peer reviewer using the checklists in [`.github/pull_request_template.md`](../.github/pull_request_template.md):
   1. **Open-Closed Principle (OCP) Audit:** Confirm that adding a new `PIIDetector` or `AnonymizationStrategy` requires zero edits to `src/pipeline/`.
-  2. **Encapsulation Audit:** Confirm `TokenVault` and `AnonymizationMemento` internals are never exposed or mutated outside their authorized boundaries.
+  2. **Encapsulation Audit:** Confirm `VaultCore` and `PipelineMemento` internals are never exposed or mutated outside their authorized boundaries.
   3. **Zero PII Leakage Audit:** Verify that `repr()`, `str()`, `AuditEvent` payloads, and exception messages never include raw PII/PHI substrings.
 
 ---
@@ -47,6 +47,6 @@ flowchart LR
   - PL/US regex & mathematical checksum validators (`src/detectors/regex.py`), Transformer NER adapters (`src/detectors/ner.py`), context rule enhancers (`src/detectors/heuristic.py`), and strategy registries (`src/detectors/base.py`, `src/strategies/base.py`).
   - Unit, integration, and security abuse test suites (`tests/test_person_a_pipeline_and_detectors.py`).
 - **What Required Manual Refactoring / Fixing by the Student:**
-  - Simplified detector orchestration in `DetectionFilter` and updated architecture documentation (`ARCHITECTURE.md`, `docs/adr/README.md`) to rely purely on the Strategy pattern and span conflict resolution (`resolve_overlapping_spans`) without redundant Composite wrappers.
+  - Simplified detector orchestration in `PIIDetectorFilter` and updated architecture documentation (`ARCHITECTURE.md`, `docs/adr/README.md`) to rely purely on the Strategy pattern and span conflict resolution (`resolve_overlapping_spans`) without redundant Composite wrappers.
   - Audited and verified strict Open-Closed Principle (OCP) compliance (zero concrete detector/entity branching inside pipeline filters), `mypy --strict` static typing across all modules, and zero raw PII leakage in `DetectedEntity` representations, exceptions, and audit events.
 

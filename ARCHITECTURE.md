@@ -58,7 +58,7 @@ flowchart TD
     PipelineProxy["🛡️ Pipeline Proxy\n(wzorzec Proxy)"]
     InboundPipeline["⚙️ Inbound Pipeline\n(Pipes & Filters)"]
     Vault["🔐 Tokenization Vault\n(Proxy + Memento)"]
-    ResidencyGate["🌍 Residency Gate\nPolicy Engine"]
+    ResidencyPolicyFilter["🌍 Residency Gate\nPolicy Engine"]
     ExtLLM["🤖 Zewnętrzny LLM\n(OpenAI / Anthropic / ...)"]
     OutboundPipeline["⚙️ Outbound Pipeline\n(Pipes & Filters)"]
     AuditLog["📋 Immutable Audit Log"]
@@ -70,10 +70,10 @@ flowchart TD
     InboundPipeline -->|"wykrywanie PII"| D1["🔍 Detector Filter"]
     D1 -->|"strategia maskowania"| D2["🎭 Anonymization Filter\n(Strategy)"]
     D2 -->|"ocena ryzyka re-ID"| D3["📊 Re-ID Risk Filter"]
-    D3 -->|"weryfikacja residency"| ResidencyGate
+    D3 -->|"weryfikacja residency"| ResidencyPolicyFilter
 
-    ResidencyGate -->|"blokada jeśli naruszenie"| AuditLog
-    ResidencyGate -->|"dozwolone"| ExtLLM
+    ResidencyPolicyFilter -->|"blokada jeśli naruszenie"| AuditLog
+    ResidencyPolicyFilter -->|"dozwolone"| ExtLLM
 
     ExtLLM -->|"odpowiedź z tokenami"| OutboundPipeline
     OutboundPipeline -->|"OutputPIIDetector: skan przed de-tokenizacją"| Vault
@@ -83,7 +83,7 @@ flowchart TD
     PipelineProxy -->|"odpowiedź dla uprawnionego"| Client
 
     style Vault fill:#ffd6a5,stroke:#e07a00
-    style ResidencyGate fill:#d0f0c0,stroke:#2d6a4f
+    style ResidencyPolicyFilter fill:#d0f0c0,stroke:#2d6a4f
     style AuditLog fill:#e8d5f5,stroke:#6a2d8f
     style KeyManagement fill:#ffd6d6,stroke:#8f2d2d
 ```
@@ -120,7 +120,7 @@ flowchart LR
     F2["🔍 PIIDetector\nFilter"] --> F3
     F3["📊 RiskAssessment\nFilter"] --> F4
     F4["🎭 Anonymization\nFilter"] --> F5
-    F5["🌍 ResidencyPolicy\nFilter"] --> F6
+    F5["🌍 ResidencyPolicyFilter"] --> F6
     F6["📋 AuditContext\nFilter"] --> OUT["📤 Wyjście\n(zanonimizowany tekst)"]
 
     LLM["🤖 Odpowiedź LLM\n(z tokenami)"] --> OF1
@@ -135,24 +135,24 @@ flowchart LR
     style OF2 fill:#ffd6a5,stroke:#e07a00
 ```
 
-Na wejściu `Inbound Pipeline` opcjonalny `DocumentExtractorFilter` przechwytuje załączniki dokumentowe (np. pliki PDF), odrzuca metadane binarne (XMP / Info Dictionary) i ekstrahuje czystą warstwę tekstową przed przekazaniem jej do `LanguageDetectorFilter`. Surowe pliki binarne nigdy nie opuszczają pipeline'u, a dokumenty zawierające skany lub osadzone obrazy bez skonfigurowanego lokalnego OCR są zatrzymywane w trybie fail-closed (`HardStop`).
+Na wejściu `Inbound Pipeline` opcjonalny `DocumentExtractorFilter` przechwytuje załączniki dokumentowe (np. pliki PDF), odrzuca metadane binarne (XMP / Info Dictionary) i ekstrahuje czystą warstwę tekstową przed przekazaniem jej do `LanguageDetectorFilter`. Surowe pliki binarne nigdy nie opuszczają pipeline'u, a dokumenty zawierające skany lub osadzone obrazy bez skonfigurowanego lokalnego OCR są zatrzymywane w trybie fail-closed (`HardStopError`).
 
 Outbound Pipeline zawiera `OutputPIIDetector`, uruchamiany przed `ResponseRestorer`, de-tokenizacją oraz odwróceniem Memento. Filtr analizuje także odpowiedzi częściowe i może wykonać hard-stop, redakcję lub przekazać wynik do audytu, zanim jakakolwiek wartość zostanie przywrócona z Vault.
 
 **Kluczowe właściwości:**
 
 - **Kolejność filtrów jest deterministyczna** — `LanguageDetector` musi działać przed `PIIDetector`, bo reguły wykrywania PESEL różnią się od SSN.
-- **Short-circuit semantics** — filtr `ResidencyPolicy` może przerwać łańcuch i zwrócić błąd bez dalszego przetwarzania.
+- **Short-circuit semantics** — filtr `ResidencyPolicyFilter` może przerwać łańcuch i zwrócić błąd bez dalszego przetwarzania.
 - **Konfigurowalne łańcuchy** — `PipelineBuilder` (patrz §3.3) pozwala składać różne łańcuchy dla różnych kontekstów (np. pipeline dla danych medycznych vs. finansowych).
 
 ```
 interface Filter {
-    process(context: PipelineContext): PipelineContext | HardStop
+    process(context: PipelineContext): PipelineContext | HardStopError
 }
 
 interface Pipe {
-    addFilter(filter: Filter): Pipe
-    execute(input: RawInput): PipelineResult
+    add_filter(filter: Filter): Pipe
+    execute(context: PipelineContext): PipelineContext
 }
 ```
 
@@ -170,7 +170,7 @@ Wzorzec Strategy pozwala dodawać nowe metody ochrony **bez modyfikacji** `Anony
 ```mermaid
 classDiagram
     class AnonymizationFilter {
-        -strategySelector: StrategySelector
+        -strategy_selector: StrategySelector
         +process(ctx: PipelineContext) PipelineContext
     }
     class StrategySelector {
@@ -179,30 +179,30 @@ classDiagram
     class AnonymizationStrategy {
         <<interface>>
         +anonymize(value: string, entity: DetectedEntity) AnonymizationResult
-        +canReverse() bool
+        +can_reverse() bool
     }
     class TokenizationStrategy {
         -vault: TokenizationVault
         +anonymize(value, entity) AnonymizationResult
-        +canReverse() bool
+        +can_reverse() bool
     }
     class MaskingStrategy {
-        -maskChar: char
-        -preserveLength: bool
+        -mask_char: char
+        -preserve_length: bool
         +anonymize(value, entity) AnonymizationResult
-        +canReverse() bool
+        +can_reverse() bool
     }
     class GeneralizationStrategy {
-        -kAnonTarget: int
+        -k_min: int
         -hierarchy: GeneralizationHierarchy
         +anonymize(value, entity) AnonymizationResult
-        +canReverse() bool
+        +can_reverse() bool
     }
     class SynthesisStrategy {
-        -syntheticDataGenerator: Generator
-        -mappingStore: VaultMemento
+        -synthetic_data_generator: Generator
+        -mapping_store: PipelineMemento
         +anonymize(value, entity) AnonymizationResult
-        +canReverse() bool
+        +can_reverse() bool
     }
 
     AnonymizationFilter --> StrategySelector
@@ -238,25 +238,25 @@ classDiagram
 ```mermaid
 flowchart LR
     B["PipelineBuilder"]
-    B -->|"forDataClass(MEDICAL)"| B1["+ MedicalPIIDetector\n+ PHIExtractor"]
-    B -->|"withResidencyPolicy(EU_ONLY)"| B2["+ ResidencyFilter(EU)"]
-    B -->|"withAnonymizationStrategy\n(TOKENIZE)"| B3["+ TokenizationStrategy"]
-    B -->|"withAuditLevel(FULL)"| B4["+ DetailedAuditFilter"]
+    B -->|"for_data_class(MEDICAL)"| B1["+ PIIDetector"]
+    B -->|"with_residency_policy(...)"| B2["+ ResidencyPolicyFilter"]
+    B -->|"with_anonymization_strategy\n(TOKENIZE)"| B3["+ TokenizationStrategy"]
+    B -->|"with_audit_level(FULL)"| B4["+ AuditContextFilter"]
     B -->|"build()"| P["✅ Immutable\nPipeline"]
 ```
 
 ```
 PipelineBuilder
-    .forDataClass(DataClass.MEDICAL)
-    .withResidencyPolicy(ResidencyPolicy.EU_ONLY)
-    .withAnonymizationStrategy(StrategyType.TOKENIZE, config)
-    .withReIdRiskThreshold(0.05)
-    .withAuditLevel(AuditLevel.FULL)
+    .for_data_class(DataClass.MEDICAL)
+    .with_residency_policy(residency_policy_engine)
+    .with_anonymization_strategy(TokenizationStrategy())
+    .with_re_id_risk_threshold(0.05)
+    .with_audit_level(AuditLevel.FULL)
     .build()
 ```
 
 **Dlaczego Builder, nie Factory?**  
-Factory tworzy jeden dobrze znany obiekt. Builder jest niezbędny, gdy produkt wymaga **wielu kroków konfiguracji z walidacją między nimi** — np. nie można ustawić `withAuditLevel(NONE)` przy `DataClass.MEDICAL` (naruszenie GDPR).
+Factory tworzy jeden dobrze znany obiekt. Builder jest niezbędny, gdy produkt wymaga **wielu kroków konfiguracji z walidacją między nimi** — np. nie można ustawić `with_audit_level(NONE)` przy `DataClass.MEDICAL` (naruszenie GDPR).
 
 ---
 
@@ -264,7 +264,7 @@ Factory tworzy jeden dobrze znany obiekt. Builder jest niezbędny, gdy produkt w
 
 **Rola:** Kontrolowany punkt dostępu do operacji tokenizacji i de-tokenizacji.
 
-`VaultProxy` implementuje ten sam interfejs co `VaultCore`, dodając:
+`VaultProxy` implementuje interfejs `TokenizationVault` i opakowuje `VaultCore`, dodając:
 1. **Uwierzytelnienie** żądającego podmiotu (JWT / mTLS),
 2. **Autoryzację** (RBAC/ABAC — czy ten podmiot może de-tokenizować ten typ encji?),
 3. **Audit log** każdej próby dostępu (udanej i odrzuconej),
@@ -279,7 +279,7 @@ sequenceDiagram
     participant VaultCore as VaultCore (rzeczywisty)
     participant KMS as KMS
 
-    Service->>VaultProxy: deTokenize(token, credentials)
+    Service->>VaultProxy: de_tokenize(token, credentials)
     VaultProxy->>AuthN: verify(credentials)
     AuthN-->>VaultProxy: identity + permissions
 
@@ -288,8 +288,8 @@ sequenceDiagram
         VaultProxy-->>Service: 403 Forbidden
     else MA uprawnienia
         VaultProxy->>AuditLog: log(ATTEMPT, token, identity, timestamp)
-        VaultProxy->>VaultCore: deTokenize(token)
-        VaultCore->>KMS: getDecryptionKey(keyId)
+        VaultProxy->>VaultCore: de_tokenize(token)
+        VaultCore->>KMS: get_decryption_key(key_id)
         KMS-->>VaultCore: key
         VaultCore-->>VaultProxy: originalValue
         VaultProxy->>AuditLog: log(SUCCESS, token, identity, timestamp)
@@ -301,13 +301,13 @@ sequenceDiagram
 
 ```
 TokenRecord {
-    tokenId:        UUID          // publiczny identyfikator tokenu, np. <PERSON_1>
-    encryptedValue: bytes         // AES-256-GCM(originalValue, dataEncryptionKey)
-    keyId:          UUID          // wskazuje na klucz w KMS
-    entityType:     EntityType    // PERSON, PESEL, IBAN, ...
-    createdAt:      timestamp
-    expiresAt:      timestamp?    // zgodnie z retention policy
-    sessionId:      UUID          // powiązanie z kontekstem żądania
+    token_id:        UUID          // publiczny identyfikator tokenu, np. <PERSON_1>
+    encrypted_value: bytes         // AES-256-GCM(originalValue, dataEncryptionKey)
+    key_id:          UUID          // wskazuje na klucz w KMS
+    entity_type:     EntityType    // PERSON, PESEL, IBAN, ...
+    created_at:      timestamp
+    expires_at:      timestamp?    // zgodnie z retention policy
+    session_id:      UUID          // powiązanie z kontekstem żądania
 }
 ```
 
@@ -321,7 +321,7 @@ Memento służy dwóm celom:
 
 #### A. Przywracanie tokenów w odpowiedzi LLM
 
-`PipelineContext` (Originator) tworzy `PipelineMemento` po fazie anonimizacji. Ten snapshot zawiera mapowanie `token → metadane`, które pozwala `ResponseRestorer` (Caretaker) przywrócić oryginalne wartości w odpowiedzi LLM **bez ponownego dostępu do Vault** dla każdego tokenu z osobna — jeden call, atomowe przywrócenie.
+`PipelineContext` (Originator) tworzy `PipelineMemento` po fazie anonimizacji. Ten snapshot zawiera mapowanie `token → metadane`, które pozwala `ResponseRestorer` (ResponseRestorer) przywrócić oryginalne wartości w odpowiedzi LLM **bez ponownego dostępu do Vault** dla każdego tokenu z osobna — jeden call, atomowe przywrócenie.
 
 #### B. Odtwarzanie stanu po awarii
 
@@ -329,9 +329,9 @@ Przy przerwaniu sesji (np. timeout LLM) system może odtworzyć stan z Memento i
 
 #### C. Dynamic Memento Expansion w sesji agentowej
 
-W sesji agentowej `PipelineMemento` jest rozszerzalny i może atomowo dopisywać nowe tokeny powstałe podczas wykonywania narzędzi. Gdy `ToolExecutionMiddleware` pobierze z Vault wartość potrzebną do zapytania (np. `Jan Kowalski`), wynik z bazy danych jest natychmiast tokenizowany w Vault/Memento (np. `1990-01-01` → `<DATE_1>`), a wpis `<DATE_1>` zostaje dodany do istniejącego `tokenMap` tej samej sesji. Memento nie ujawnia wartości jawnej ani LLM, ani komponentom przechowującym snapshot.
+W sesji agentowej `PipelineMemento` jest rozszerzalny i może atomowo dopisywać nowe tokeny powstałe podczas wykonywania narzędzi. Gdy `ToolExecutionMiddleware` pobierze z Vault wartość potrzebną do zapytania (np. `Jan Kowalski`), wynik z bazy danych jest natychmiast tokenizowany w Vault/Memento (np. `1990-01-01` → `<DATE_1>`), a wpis `<DATE_1>` zostaje dodany do istniejącego `token_map` tej samej sesji. Memento nie ujawnia wartości jawnej ani LLM, ani komponentom przechowującym snapshot.
 
-Rozszerzenie jest wersjonowane i wykonywane przed zwróceniem wyniku narzędzia do LLM, dzięki czemu `ResponseRestorer` korzystający z końcowego snapshotu przywraca zarówno tokeny pierwotnego promptu (`<PERSON_1>`), jak i tokeny wygenerowane dynamicznie przez narzędzie (`<DATE_1>`). Operacja wymaga kontroli integralności, zgodności `sessionId` oraz audytu tak jak początkowa anonimizacja.
+Rozszerzenie jest wersjonowane i wykonywane przed zwróceniem wyniku narzędzia do LLM, dzięki czemu `ResponseRestorer` korzystający z końcowego snapshotu przywraca zarówno tokeny pierwotnego promptu (`<PERSON_1>`), jak i tokeny wygenerowane dynamicznie przez narzędzie (`<DATE_1>`). Operacja wymaga kontroli integralności, zgodności `session_id` oraz audytu tak jak początkowa anonimizacja.
 
 ```mermaid
 stateDiagram-v2
@@ -342,16 +342,16 @@ stateDiagram-v2
     WaitingForLLM --> ResponseReceived : sukces
     WaitingForLLM --> Recovering : timeout lub błąd
     Recovering --> SentToLLM : retry z Memento
-    ResponseReceived --> Restored : Caretaker przywraca z Memento + Vault
+    ResponseReceived --> Restored : ResponseRestorer przywraca z Memento + Vault
     Restored --> [*] : odpowiedź do klienta
 ```
 
 ```
 PipelineMemento {
-    sessionId:      UUID
-    tokenMap:       Map<Token, EntityMetadata>   // NIE zawiera oryginalnych wartości
+    session_id:      UUID
+    token_map:       Map<Token, EntityMetadata>   // NIE zawiera oryginalnych wartości
     version:        int                           // wersja po każdym rozszerzeniu
-    appliedFilters: List<FilterRecord>
+    applied_filters: List<FilterRecord>
     timestamp:      Instant
     checksum:       bytes   // integralność snapshotu
 }
@@ -442,9 +442,9 @@ flowchart TD
 
 | Komponent | Odpowiedzialność | Wzorzec |
 |-----------|-----------------|---------|
-| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` / `FunctionCall` JSON | Proxy, Facade |
-| `Inbound Pipeline` | Przetwarza `RawInput` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
-| `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStop`) surowe binaria lub skany bez lokalnego OCR | Filter |
+| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` / `ToolCall` JSON | Proxy, Facade |
+| `Inbound Pipeline` | Przetwarza `PipelineContext` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
+| `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStopError`) surowe binaria lub skany bez lokalnego OCR | Filter |
 | `PIIDetector` | Hybrydowy detektor (Strategy): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Strategy |
 | `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
 | `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
@@ -457,15 +457,15 @@ flowchart TD
 | `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
 
 `PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`:
-- Dla obiektu `ToolCall` / `FunctionCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
-- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `HardStop(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)`.
+- Dla obiektu `ToolCall` / `ToolCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
+- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `HardStopError(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)`.
 
 ```
 ToolCall {
     id:        UUID
     name:      string
     arguments: JSON          // wartości PII zastąpione tokenami
-    sessionId: UUID
+    session_id: UUID
 }
 ```
 
@@ -500,8 +500,8 @@ sequenceDiagram
     InPipe->>Vault: tokenize("90010112345", PESEL)
     Vault-->>InPipe: token PESEL_1
 
-    Note over InPipe: [Filter 5] ResidencyPolicy - ALLOWED
-    Note over InPipe: Tworzenie Memento (snapshot tokenMap)
+    Note over InPipe: [Filter 5] ResidencyPolicyFilter - ALLOWED
+    Note over InPipe: Tworzenie Memento (snapshot token_map)
 
     InPipe-->>Proxy: "PERSON_1, PESEL_1, skarzy sie na fakture 7/2026"
     Proxy->>LLM: zanonimizowany tekst
@@ -510,9 +510,9 @@ sequenceDiagram
     Proxy->>OutPipe: restore(response, memento)
     OutPipe->>OutputPII: scan(response)
     OutputPII-->>OutPipe: brak nowego PII / tokeny do przywrócenia
-    OutPipe->>Vault: deTokenize(PERSON_1, credentials)
+    OutPipe->>Vault: de_tokenize(PERSON_1, credentials)
     Vault-->>OutPipe: "Jan Kowalski"
-    OutPipe->>Vault: deTokenize(PESEL_1, credentials)
+    OutPipe->>Vault: de_tokenize(PESEL_1, credentials)
     Vault-->>OutPipe: "90010112345"
     OutPipe-->>Proxy: odpowiedź z przywróconymi danymi
     Proxy-->>User: "Sprawa Jana Kowalskiego (PESEL 90010112345)..."
@@ -537,8 +537,8 @@ sequenceDiagram
     participant AuditLog as AuditLog
     participant Alerting as SIEM / Alerting
 
-    ServiceB->>VProxy: deTokenize(PERSON_1, token=JWT_B)
-    VProxy->>AuthZ: canDeTokenize(identity=B, token=PERSON_1, entityType=PERSON)
+    ServiceB->>VProxy: de_tokenize(PERSON_1, token=JWT_B)
+    VProxy->>AuthZ: can_de_tokenize(identity=B, token=PERSON_1, entity_type=PERSON)
     AuthZ-->>VProxy: DENIED (brak roli PERSON_DETOKENIZE)
 
     VProxy->>AuditLog: SECURITY_EVENT type=DETOKENIZE_DENIED requestor=ServiceB
@@ -547,7 +547,7 @@ sequenceDiagram
 ```
 
 **Mechanizmy ochrony:**
-- Token jest powiązany z `sessionId` — nawet znajomość tokenu nie pozwala na de-tokenizację poza oryginalną sesją (strict mode).
+- Token jest powiązany z `session_id` — nawet znajomość tokenu nie pozwala na de-tokenizację poza oryginalną sesją (strict mode).
 - `AuditLog` jest append-only — zdarzenie odmowy nie może zostać usunięte.
 - Wielokrotne odmowy z tego samego źródła triggerują alert w SIEM.
 
@@ -561,7 +561,7 @@ sequenceDiagram
 flowchart TD
     A["Żądanie z danymi PHI (DataClass: MEDICAL)"] --> B
     B["ResidencyPolicyEngine"] --> C{Czy provider LLM jest w EU?}
-    C -->|"NIE (us-east-1)"| D["HardStop: RESIDENCY_VIOLATION"]
+    C -->|"NIE (us-east-1)"| D["HardStopError: RESIDENCY_VIOLATION"]
     C -->|"TAK (eu-west-1)"| E["Kontynuuj pipeline"]
     D --> F["AuditLog: RESIDENCY_BLOCKED"]
     D --> G["HTTP 451 Unavailable For Legal Reasons"]
@@ -636,10 +636,10 @@ neurochirurg
 ```mermaid
 flowchart TD
     A["KeyRotation Scheduler"] --> B
-    B["KMS: generateNewKey() - keyId_v2"] --> C
-    C["TokenDB: pobierz rekordy z keyId_v1, status=ACTIVE"] --> D{Strategia rotacji}
-    D -->|"RE-ENCRYPT (domyslna)"| E["1. decrypt(value, key_v1)\n2. encrypt(value, key_v2)\n3. update keyId na v2"]
-    D -->|"RETAIN_OLD_KEY (legacy)"| F["key_v1: status DEPRECATED\naktywny do expiresAt"]
+    B["KMS: generateNewKey() - key_id_v2"] --> C
+    C["TokenDB: pobierz rekordy z key_id_v1, status=ACTIVE"] --> D{Strategia rotacji}
+    D -->|"RE-ENCRYPT (domyslna)"| E["1. decrypt(value, key_v1)\n2. encrypt(value, key_v2)\n3. update key_id na v2"]
+    D -->|"RETAIN_OLD_KEY (legacy)"| F["key_v1: status DEPRECATED\naktywny do expires_at"]
     D -->|"EXPIRE (strict)"| G["Tokeny z key_v1: status EXPIRED\nde-tokenizacja niemozliwa"]
     E --> H["AuditLog: KEY_ROTATION_COMPLETED"]
     F --> H
@@ -680,13 +680,13 @@ sequenceDiagram
     Middleware->>InPipe: process(text)
     InPipe->>Vault: tokenize("Jan Kowalski", PERSON)
     Vault-->>InPipe: "<PERSON_1>"
-    InPipe->>Vault: create/extend Memento(sessionId, <PERSON_1>)
+    InPipe->>Vault: create/extend Memento(session_id, <PERSON_1>)
     InPipe-->>Middleware: prompt + Tool definitions
     Middleware->>LLM: zanonimizowany prompt + get_birth_date(...)
     LLM-->>Middleware: ToolCall {name: get_birth_date,\narguments: {user_id: "<PERSON_1>"}}
 
     Middleware->>ToolMW: intercept(ToolCall)
-    ToolMW->>Vault: deTokenize("<PERSON_1>", session credentials)
+    ToolMW->>Vault: de_tokenize("<PERSON_1>", session credentials)
     Vault-->>ToolMW: "Jan Kowalski"
     ToolMW->>DB: get_birth_date(user_id="Jan Kowalski")
     DB-->>ToolMW: "1990-01-01"
@@ -697,9 +697,9 @@ sequenceDiagram
 
     LLM-->>Middleware: "<PERSON_1> urodził się <DATE_1>"
     Middleware->>OutPipe: restore(response, expanded Memento)
-    OutPipe->>Vault: deTokenize("<PERSON_1>", credentials)
+    OutPipe->>Vault: de_tokenize("<PERSON_1>", credentials)
     Vault-->>OutPipe: "Jan Kowalski"
-    OutPipe->>Vault: deTokenize("<DATE_1>", credentials)
+    OutPipe->>Vault: de_tokenize("<DATE_1>", credentials)
     Vault-->>OutPipe: "1990-01-01"
     OutPipe-->>Middleware: "Jan Kowalski urodził się 1990-01-01"
     Middleware-->>User: pełna odpowiedź
@@ -746,7 +746,7 @@ Dlatego dla dokumentów PDF obowiązuje architektura **Extract-Then-Anonymize, F
 - **Całkowita blokada surowych binariów:** Oryginalny plik PDF nigdy nie jest przekazywany do zewnętrznego API LLM.
 - **Ekstrakcja tekstu i czyszczenie metadanych:** `DocumentExtractorFilter` (np. w oparciu o lokalny parser `PyMuPDF` / `pdfplumber`) wyciąga wyłącznie warstwę tekstową oraz strukturę tabel, odrzucając wszystkie metadane dokumentu, po czym przekazuje czysty tekst do `LanguageDetector` → `PIIDetector` → `AnonymizationFilter`.
 - **Polityka dla skanów i obrazów (Fail-Closed vs. Local OCR):** Jeśli PDF nie posiada warstwy tekstowej (jest skanem) lub zawiera osadzone obrazy:
-  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `HardStop(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)` i rejestruje zdarzenie w `AuditLog`,
+  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `HardStopError(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)` i rejestruje zdarzenie w `AuditLog`,
   - w trybie rozszerzonym (`LOCAL_OCR_ENABLED`) obraz jest przetwarzany przez lokalny silnik OCR działający wewnątrz zaufanej granicy (bez dostępu do sieci), a rozpoznany tekst trafia do standardowej detekcji PII.
 
 **Priorytety błędów detekcji:**
@@ -789,7 +789,7 @@ flowchart LR
 | Ocena ryzyka AI | `ReIdRiskAnalyzer` + dokumentacja modelu |
 | Transparentność | `AuditLog` (niemodyfikowalny) |
 
-**Cykl życia sesji i purge Vaulta:** przy utworzeniu sesji `RetentionPolicyEngine` wyznacza `expiresAt` dla każdego `TokenRecord` (domyślnie TTL 24h, konfigurowalny zgodnie z polityką organizacji). Asynchroniczny `RetentionWorker` cyklicznie pobiera rekordy, dla których `expiresAt < now()`, i wykonuje atomowe, nieodwracalne usunięcie zaszyfrowanych wartości oraz ich mapowań z `TokenDB` (`Purge`). Operacja jest idempotentna, monitorowana i audytowana bez zapisywania wartości PII. Mechanizm realizuje operacyjne usuwanie danych zgodnie z RODO art. 17; ewentualne wyjątki retencyjne (np. obowiązek prawny) muszą być jawnie oznaczone polityką i nie mogą rozszerzać domyślnego TTL.
+**Cykl życia sesji i purge Vaulta:** przy utworzeniu sesji `RetentionPolicyEngine` wyznacza `expires_at` dla każdego `TokenRecord` (domyślnie TTL 24h, konfigurowalny zgodnie z polityką organizacji). Asynchroniczny `RetentionWorker` cyklicznie pobiera rekordy, dla których `expires_at < now()`, i wykonuje atomowe, nieodwracalne usunięcie zaszyfrowanych wartości oraz ich mapowań z `TokenDB` (`Purge`). Operacja jest idempotentna, monitorowana i audytowana bez zapisywania wartości PII. Mechanizm realizuje operacyjne usuwanie danych zgodnie z RODO art. 17; ewentualne wyjątki retencyjne (np. obowiązek prawny) muszą być jawnie oznaczone polityką i nie mogą rozszerzać domyślnego TTL.
 
 ---
 
@@ -909,12 +909,12 @@ Pełne rekordy decyzji architektonicznych (zawierające sekcje *Context & Proble
 
 | ID | Tytuł decyzji | Główny wzorzec / mechanizm | Status | Kluczowe uzasadnienie i kompromisy |
 | :--- | :--- | :--- | :--- | :--- |
-| **[ADR-001](docs/adr/001-pipes-and-filters-pipeline.md)** | Synchronous Prompt/Response Sanitization via Pipes & Filters | **Pipes & Filters** | Accepted | Bezstanowe filtry nad niemutowalnym `PipelineContext` zapewniają bezpieczeństwo wątkowe i deterministyczny *fail-closed short-circuiting* (np. `ResidencyGate`). |
+| **[ADR-001](docs/adr/001-pipes-and-filters-pipeline.md)** | Synchronous Prompt/Response Sanitization via Pipes & Filters | **Pipes & Filters** | Accepted | Bezstanowe filtry nad niemutowalnym `PipelineContext` zapewniają bezpieczeństwo wątkowe i deterministyczny *fail-closed short-circuiting* (np. `ResidencyPolicyFilter`). |
 | **[ADR-002](docs/adr/002-strategy-pattern-detectors-and-anonymizers.md)** | Pluggable PII Detectors and Anonymization Algorithms via Strategy Pattern | **Strategy** | Accepted | Pełna zgodność z zasadą Open-Closed (OCP): dodanie nowego detektora (np. polski IBAN) lub strategii (maskowanie, tokenizacja, $k$-anonimowość) wymaga zero zmian w klasach `src/pipeline/`. |
-| **[ADR-003](docs/adr/003-pipeline-builder.md)** | Composing Multi-Stage Compliance Pipelines via Fluent Builder | **Builder** | Accepted | Walidacja niezmienników na etapie `.build()` (obecność detektora, powiązanie strategii odwracalnych z `VaultProtectionProxy` i `Caretaker`, wymuszenie kanonicznej kolejności filtrów). |
-| **[ADR-004](docs/adr/004-protection-proxy-token-vault.md)** | Access-Controlled Cryptographic Token Vault via Protection Proxy | **Protection Proxy** | Accepted | `VaultProtectionProxy` izoluje pakietowo prywatny `TokenVault` (AES-256-GCM + AAD), wymuszając kontrolę RBAC/tenant oraz niezmienny zapis do `AuditLogger` przy każdej próbie dostępu (`GRANTED` i `DENIED`). |
-| **[ADR-005](docs/adr/005-memento-state-restoration.md)** | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | `AnonymizationMemento` przechowuje wyłącznie hermetyzowane wskaźniki `placeholder -> token_id` oraz wersję klucza (zero jawnego PII poza Vaultem); odtworzenie odpowiedzi zawsze przechodzi przez autoryzację w Proxy. |
+| **[ADR-003](docs/adr/003-pipeline-builder.md)** | Composing Multi-Stage Compliance Pipelines via Fluent Builder | **Builder** | Accepted | Walidacja niezmienników na etapie `.build()` (obecność detektora, powiązanie strategii odwracalnych z `VaultProxy` i `ResponseRestorer`, wymuszenie kanonicznej kolejności filtrów). |
+| **[ADR-004](docs/adr/004-protection-proxy-token-vault.md)** | Access-Controlled Cryptographic Token Vault via Protection Proxy | **Protection Proxy** | Accepted | `VaultProxy` izoluje pakietowo prywatny `VaultCore` (AES-256-GCM + AAD), wymuszając kontrolę RBAC/tenant oraz niezmienny zapis do `AuditWriter` przy każdej próbie dostępu (`GRANTED` i `DENIED`). |
+| **[ADR-005](docs/adr/005-memento-state-restoration.md)** | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | `PipelineMemento` przechowuje wyłącznie hermetyzowane wskaźniki `placeholder -> token_id` oraz wersję klucza (zero jawnego PII poza Vaultem); odtworzenie odpowiedzi zawsze przechodzi przez autoryzację w Proxy. |
 | **[ADR-006](docs/adr/006-streaming-proxy-placeholder-buffering.md)** | Streaming Response Detokenization via Placeholder Window Buffering | **Pipes & Filters (Streaming)** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE pozwala atomowo de-tokenizować placeholdery podzielone między chunkami i skanować wyjście przez `OutputPIIDetector` bez buforowania całej odpowiedzi. |
-| **[ADR-007](docs/adr/007-anonymized-agentic-tool-calling.md)** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie `ToolCall` w middleware, de-tokenizacja argumentów zapytania do DB wewnątrz zaufanej granicy, natychmiastowa tokenizacja wyniku narzędzia i wersjonowane rozszerzenie `AnonymizationMemento`. |
+| **[ADR-007](docs/adr/007-anonymized-agentic-tool-calling.md)** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie `ToolCall` w middleware, de-tokenizacja argumentów zapytania do DB wewnątrz zaufanej granicy, natychmiastowa tokenizacja wyniku narzędzia i wersjonowane rozszerzenie `PipelineMemento`. |
 | **[ADR-008](docs/adr/008-hybrid-ner-and-context-enhancers.md)** | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy** | Accepted | Połączenie walidatorów regex/checksum, reguł kontekstowych (`ContextRuleEnhancer` niwelujących *capitalization bias*) oraz opcjonalnego adaptera Transformer NER (`HerBERT` / `GLiNER`). |
-| **[ADR-009](docs/adr/009-pdf-extract-then-anonymize.md)** | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Blokada wysyłki surowych plików binarnych PDF do LLM; ekstrakcja czystego tekstu z odrzuceniem metadanych XMP/Info oraz `HardStop` dla skanów/obrazów przy braku lokalnego OCR. |
+| **[ADR-009](docs/adr/009-pdf-extract-then-anonymize.md)** | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Blokada wysyłki surowych plików binarnych PDF do LLM; ekstrakcja czystego tekstu z odrzuceniem metadanych XMP/Info oraz `HardStopError` dla skanów/obrazów przy braku lokalnego OCR. |

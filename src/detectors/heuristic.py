@@ -229,7 +229,7 @@ class HeuristicPIIDetector(PIIDetector):
                         end=match.end(),
                         raw_value=match.group(0),
                         confidence=0.88 if has_trigger else 0.80,
-                        data_class=DataClass.CONFIDENTIAL,
+                        data_class=DataClass.GENERAL,
                         detector_id=self.detector_id,
                     )
                 )
@@ -253,7 +253,7 @@ class HeuristicPIIDetector(PIIDetector):
                         end=match.end(),
                         raw_value=match.group(0),
                         confidence=conf,
-                        data_class=DataClass.CONFIDENTIAL,
+                        data_class=DataClass.GENERAL,
                         detector_id=self.detector_id,
                     )
                 )
@@ -267,7 +267,7 @@ class HeuristicPIIDetector(PIIDetector):
                     end=match.end(),
                     raw_value=match.group(0),
                     confidence=0.85,
-                    data_class=DataClass.CONFIDENTIAL,
+                    data_class=DataClass.GENERAL,
                     detector_id=self.detector_id,
                 )
             )

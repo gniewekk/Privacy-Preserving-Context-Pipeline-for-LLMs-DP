@@ -9,20 +9,20 @@ from detectors.base import PIIDetector
 from detectors.heuristic import ContextRuleEnhancer
 from domain.exceptions import PipelineConfigurationError
 from domain.models import AuditLevel, DataClass, EntityType, PDFExtractionPolicy
-from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
+from domain.protocols import AuditWriter, LocalOCREngine, ResidencyPolicyEngine
 from pipeline.filter import Filter, Pipeline
 from pipeline.filters import (
     AnonymizationFilter,
     AuditContextFilter,
-    DetectionFilter,
     DocumentExtractorFilter,
     LanguageDetectorFilter,
-    ResidencyGate,
+    PIIDetectorFilter,
+    ResidencyPolicyFilter,
 )
 from strategies.base import (
     AnonymizationStrategy,
-    PlaceholderTokenStrategy,
-    StrategyRegistry,
+    StrategySelector,
+    TokenizationStrategy,
 )
 
 
@@ -35,18 +35,18 @@ class PipelineBuilder:
         self._detectors: list[PIIDetector] = []
         self._enhancer: ContextRuleEnhancer | None = None
         self._strategies: dict[EntityType, AnonymizationStrategy] = {}
-        self._default_strategy: AnonymizationStrategy = PlaceholderTokenStrategy(
+        self._default_strategy: AnonymizationStrategy = TokenizationStrategy(
             reversible=False
         )
-        self._residency_policy: ResidencyPolicy | None = None
+        self._residency_policy: ResidencyPolicyEngine | None = None
         self._vault_proxy: Any | None = None
-        self._memento_caretaker: Any | None = None
+        self._response_restorer: Any | None = None
         self._k_anonymity_threshold: int | None = None
         self._re_id_risk_threshold: float | None = None
         self._pdf_policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR
         self._ocr_engine: LocalOCREngine | None = None
-        self._audit_logger: AuditLogger | None = None
-        self._risk_filters: list[Filter] = []
+        self._audit_writer: AuditWriter | None = None
+        self._risk_assessment_filters: list[Filter] = []
         self._custom_filters: list[Filter] = []
 
     def for_data_class(self, data_class: DataClass) -> Self:
@@ -70,22 +70,8 @@ class PipelineBuilder:
         return self
 
     def with_context_enhancer(self, enhancer: ContextRuleEnhancer) -> Self:
-        """Configure the ContextRuleEnhancer used by DetectionFilter."""
+        """Configure the ContextRuleEnhancer used by PIIDetectorFilter."""
         self._enhancer = enhancer
-        return self
-
-    def with_strategy(
-        self,
-        entity_type: EntityType,
-        strategy: AnonymizationStrategy,
-    ) -> Self:
-        """Bind an AnonymizationStrategy to a specific EntityType."""
-        self._strategies[entity_type] = strategy
-        return self
-
-    def with_default_strategy(self, strategy: AnonymizationStrategy) -> Self:
-        """Configure the fallback AnonymizationStrategy for unmapped entity types."""
-        self._default_strategy = strategy
         return self
 
     def with_anonymization_strategy(
@@ -104,19 +90,19 @@ class PipelineBuilder:
             self._default_strategy = entity_or_strategy
         return self
 
-    def with_residency_policy(self, policy: ResidencyPolicy) -> Self:
-        """Attach a ResidencyPolicy gate to enforce geographical compliance."""
+    def with_residency_policy(self, policy: ResidencyPolicyEngine) -> Self:
+        """Attach a ResidencyPolicyEngine evaluated by ResidencyPolicyFilter."""
         self._residency_policy = policy
         return self
 
     def with_vault_proxy(self, vault_proxy: Any) -> Self:
-        """Bind a VaultProtectionProxy reference for reversible tokenization strategies."""
+        """Bind a VaultProxy reference for reversible tokenization strategies."""
         self._vault_proxy = vault_proxy
         return self
 
-    def with_memento_caretaker(self, caretaker: Any) -> Self:
-        """Bind a Memento Caretaker for reversible session restoration."""
-        self._memento_caretaker = caretaker
+    def with_response_restorer(self, response_restorer: Any) -> Self:
+        """Bind the ResponseRestorer caretaker for reversible session restoration."""
+        self._response_restorer = response_restorer
         return self
 
     def with_k_anonymity_threshold(self, k: int) -> Self:
@@ -151,27 +137,20 @@ class PipelineBuilder:
         self._ocr_engine = ocr_engine
         return self
 
-    def with_audit_logger(self, audit_logger: AuditLogger) -> Self:
-        """Attach an AuditLogger for security and compliance events."""
-        self._audit_logger = audit_logger
+    def with_audit_writer(self, audit_writer: AuditWriter) -> Self:
+        """Attach an AuditWriter for security and compliance events."""
+        self._audit_writer = audit_writer
         return self
 
-    def with_risk_filter(self, risk_filter: Filter) -> Self:
-        """Register a RiskAssessmentFilter stage between DetectionFilter and AnonymizationFilter."""
-        self._risk_filters.append(risk_filter)
+    def with_risk_assessment_filter(self, risk_assessment_filter: Filter) -> Self:
+        """Register a RiskAssessmentFilter between PIIDetectorFilter and AnonymizationFilter."""
+        self._risk_assessment_filters.append(risk_assessment_filter)
         return self
 
     def with_custom_filter(self, custom_filter: Filter) -> Self:
         """Append an additional stateless Filter stage."""
         self._custom_filters.append(custom_filter)
         return self
-
-    # ARCHITECTURE.md (§3.3) camelCase builder method aliases
-    forDataClass = for_data_class
-    withAuditLevel = with_audit_level
-    withResidencyPolicy = with_residency_policy
-    withAnonymizationStrategy = with_anonymization_strategy
-    withReIdRiskThreshold = with_re_id_risk_threshold
 
     def build(self) -> Pipeline:
         """Validate build-time security invariants and return an immutable Pipeline."""
@@ -181,51 +160,52 @@ class PipelineBuilder:
                 "Cannot build Pipeline without at least one registered PIIDetector."
             )
 
-        # Invariant 2: AuditLevel.NONE is forbidden for medical/PHI data class (GDPR violation)
-        if self._data_class == DataClass.PHI and self._audit_level == AuditLevel.NONE:
+        # Invariant 2: AuditLevel.NONE is forbidden for MEDICAL (PHI) data class (GDPR violation)
+        if self._data_class == DataClass.MEDICAL and self._audit_level == AuditLevel.NONE:
             raise PipelineConfigurationError(
-                "AuditLevel.NONE is forbidden when DataClass.PHI (MEDICAL) is configured."
+                "AuditLevel.NONE is forbidden when DataClass.MEDICAL is configured."
             )
 
-        # Invariant 3: Regulated PHI data class requires a ResidencyGate
-        if self._data_class == DataClass.PHI and self._residency_policy is None:
+        # Invariant 3: Regulated MEDICAL data class requires a ResidencyPolicyFilter
+        if self._data_class == DataClass.MEDICAL and self._residency_policy is None:
             raise PipelineConfigurationError(
-                "A ResidencyPolicy (ResidencyGate) is mandatory when handling DataClass.PHI."
+                "A ResidencyPolicyEngine (ResidencyPolicyFilter) is mandatory when handling "
+                "DataClass.MEDICAL."
             )
 
-        registry = StrategyRegistry(
+        strategy_selector = StrategySelector(
             strategies=self._strategies,
             default_strategy=self._default_strategy,
         )
 
-        # Invariant 4: Reversible strategies require VaultProtectionProxy and Caretaker
-        if registry.has_reversible_strategy() and (
-            self._vault_proxy is None or self._memento_caretaker is None
+        # Invariant 4: Reversible strategies require VaultProxy and ResponseRestorer
+        if strategy_selector.has_reversible_strategy() and (
+            self._vault_proxy is None or self._response_restorer is None
         ):
             raise PipelineConfigurationError(
-                "Reversible tokenization strategy requires `vault_proxy` and `memento_caretaker`."
+                "Reversible tokenization strategy requires `vault_proxy` and `response_restorer`."
             )
 
-        # Assemble filters in canonical deterministic security order (ADR-001 & ADR-003):
-        # DocumentExtractorFilter -> LanguageDetectorFilter -> DetectionFilter ->
-        # [RiskAssessmentFilter(s)] -> AnonymizationFilter -> ResidencyGate ->
+        # Assemble filters in canonical deterministic security order (ARCHITECTURE.md §3.1):
+        # DocumentExtractorFilter -> LanguageDetectorFilter -> PIIDetectorFilter ->
+        # [RiskAssessmentFilter(s)] -> AnonymizationFilter -> ResidencyPolicyFilter ->
         # [CustomFilter(s)] -> AuditContextFilter
         stages: list[Filter] = [
             DocumentExtractorFilter(
                 policy=self._pdf_policy,
                 ocr_engine=self._ocr_engine,
-                audit_logger=self._audit_logger,
+                audit_writer=self._audit_writer,
             ),
             LanguageDetectorFilter(),
-            DetectionFilter(
+            PIIDetectorFilter(
                 detectors=self._detectors,
                 k_anonymity_threshold=self._k_anonymity_threshold,
                 re_id_risk_threshold=self._re_id_risk_threshold,
                 enhancer=self._enhancer,
             ),
-            *self._risk_filters,
+            *self._risk_assessment_filters,
             AnonymizationFilter(
-                strategy_registry=registry,
+                strategy_selector=strategy_selector,
                 detectors=self._detectors,
                 enhancer=self._enhancer,
             ),
@@ -233,13 +213,13 @@ class PipelineBuilder:
 
         if self._residency_policy is not None:
             stages.append(
-                ResidencyGate(
+                ResidencyPolicyFilter(
                     policy=self._residency_policy,
-                    audit_logger=self._audit_logger,
+                    audit_writer=self._audit_writer,
                 )
             )
 
         stages.extend(self._custom_filters)
-        stages.append(AuditContextFilter(audit_logger=self._audit_logger))
+        stages.append(AuditContextFilter(audit_writer=self._audit_writer))
 
         return Pipeline(filters=stages)

@@ -15,7 +15,7 @@ from domain.models import (
     DocumentAttachment,
     EndpointMetadata,
     SecurityPrincipal,
-    ToolCallPayload,
+    ToolCall,
 )
 
 
@@ -49,7 +49,7 @@ class PipelineContext(BaseModel):
     detected_entities: tuple[DetectedEntity, ...] = ()
     anonymization_results: tuple[AnonymizationResult, ...] = ()
     placeholder_map: dict[str, str] = Field(default_factory=dict)
-    tool_call: ToolCallPayload | None = None
+    tool_call: ToolCall | None = None
     attachments: tuple[DocumentAttachment, ...] = ()
     target_endpoint: EndpointMetadata | None = None
     principal: SecurityPrincipal | None = None

@@ -18,7 +18,7 @@ Conversely, relying solely on standard pretrained Transformer Named Entity Recog
 
 ## 2. Decision
 
-We design the detection layer around a composable **Hybrid Ensemble of `PIIDetector` Strategies** orchestrated by `DetectionFilter`:
+We design the detection layer around a composable **Hybrid Ensemble of `PIIDetector` Strategies** orchestrated by `PIIDetectorFilter`:
 
 1. **Tier 1 — Deterministic Regex + Checksum Detectors (`RegexPIIDetector`):**
    - Zero-dependency detectors for structured identifiers (PESEL, SSN, Email, Phone, Polish IBAN) combining normalized regex matching with mathematical checksum verification to eliminate false positives on random digit sequences.
@@ -27,7 +27,7 @@ We design the detection layer around a composable **Hybrid Ensemble of `PIIDetec
 3. **Tier 3 — Optional Transformer NER Adapter (`NERPIIDetector`):**
    - Pluggable adapter for Transformer NER models (such as `HerBERT` or `GLiNER`) isolated behind the `PIIDetector` protocol and packaged under the optional `[project.optional-dependencies] ner` group (`torch`, `transformers`).
 4. **Deterministic Span Merging:**
-   - When multiple registered `PIIDetector` strategies emit overlapping `DetectedEntity` spans, `DetectionFilter` resolves overlaps deterministically by prioritizing higher-confidence and wider-span matches (favoring recall over precision in accordance with Privacy by Design).
+   - When multiple registered `PIIDetector` strategies emit overlapping `DetectedEntity` spans, `PIIDetectorFilter` resolves overlaps deterministically by prioritizing higher-confidence and wider-span matches (favoring recall over precision in accordance with Privacy by Design).
 
 ---
 
@@ -58,4 +58,4 @@ Making PyTorch and HuggingFace Transformers mandatory runtime dependencies for a
 
 - **Scenario 1 (Pseudonymization):** Detects both structured (`PESEL`) and unstructured (`PERSON`) entities in a single pass.
 - **Scenario 4 ($k$-Anonymity):** Extracts demographic quasi-identifiers (age, profession, location) for downstream risk evaluation.
-- **Scenario 6 (New Detector Extension):** New detectors (e.g., `PolishIBANDetector`) implement `PIIDetector` and plug into the ensemble without modifying `DetectionFilter`.
+- **Scenario 6 (New Detector Extension):** New detectors (e.g., `PolishIBANDetector`) implement `PIIDetector` and plug into the ensemble without modifying `PIIDetectorFilter`.

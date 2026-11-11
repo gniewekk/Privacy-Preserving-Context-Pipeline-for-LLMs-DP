@@ -32,11 +32,11 @@ class VaultError(PipelineError):
 
 
 class UnauthorizedVaultAccessError(VaultError):
-    """Raised by VaultProtectionProxy when RBAC or tenant verification fails."""
+    """Raised by VaultProxy when RBAC or tenant verification fails."""
 
 
 class TokenExpiredError(VaultError):
-    """Raised when attempting to detokenize a token past its retention TTL."""
+    """Raised when attempting to de-tokenize a token past its retention TTL."""
 
 
 class KeyExpiredError(VaultError):

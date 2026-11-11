@@ -9,8 +9,8 @@ from domain.models import AuditEvent, DataClass, EndpointMetadata
 
 
 @runtime_checkable
-class AuditLogger(Protocol):
-    """Append-only audit logger interface."""
+class AuditWriter(Protocol):
+    """Append-only AuditWriter interface persisting events to the immutable AuditLog."""
 
     def record(self, event: AuditEvent) -> None:
         """Record an immutable audit event."""
@@ -22,8 +22,8 @@ class AuditLogger(Protocol):
 
 
 @runtime_checkable
-class ResidencyPolicy(Protocol):
-    """Policy specification evaluating whether a target LLM endpoint is compliant."""
+class ResidencyPolicyEngine(Protocol):
+    """ResidencyPolicyEngine evaluating whether a target LLM endpoint is compliant."""
 
     def is_allowed(self, data_class: DataClass, endpoint: EndpointMetadata) -> bool:
         """Return True if `data_class` may be dispatched to `endpoint`."""

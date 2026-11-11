@@ -388,7 +388,7 @@ class RegexPIIDetector(PIIDetector):
                         end=match.end(),
                         raw_value=candidate,
                         confidence=1.0,
-                        data_class=DataClass.CONFIDENTIAL,
+                        data_class=DataClass.GENERAL,
                         detector_id=self.detector_id,
                     )
                 )
@@ -420,7 +420,7 @@ class RegexPIIDetector(PIIDetector):
                         end=match.end(),
                         raw_value=candidate,
                         confidence=0.99,
-                        data_class=DataClass.CONFIDENTIAL,
+                        data_class=DataClass.GENERAL,
                         detector_id=self.detector_id,
                     )
                 )
@@ -509,7 +509,7 @@ class RegexPIIDetector(PIIDetector):
                         end=match.end(),
                         raw_value=candidate,
                         confidence=0.99,
-                        data_class=DataClass.CONFIDENTIAL,
+                        data_class=DataClass.GENERAL,
                         detector_id=self.detector_id,
                     )
                 )
@@ -523,7 +523,7 @@ class RegexPIIDetector(PIIDetector):
                     end=match.end(),
                     raw_value=match.group(0),
                     confidence=0.99,
-                    data_class=DataClass.CONFIDENTIAL,
+                    data_class=DataClass.GENERAL,
                     detector_id=self.detector_id,
                 )
             )
@@ -537,7 +537,7 @@ class RegexPIIDetector(PIIDetector):
                     end=match.end(),
                     raw_value=match.group(0),
                     confidence=0.90,
-                    data_class=DataClass.CONFIDENTIAL,
+                    data_class=DataClass.GENERAL,
                     detector_id=self.detector_id,
                 )
             )

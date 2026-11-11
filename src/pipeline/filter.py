@@ -22,7 +22,20 @@ class Filter(Protocol):
         ...
 
 
-class Pipeline:
+@runtime_checkable
+class Pipe(Protocol):
+    """Pipes & Filters chain interface (ARCHITECTURE.md §3.1)."""
+
+    def add_filter(self, filter_stage: Filter) -> Pipe:
+        """Return a new chain with `filter_stage` appended."""
+        ...
+
+    def execute(self, context: PipelineContext) -> PipelineContext:
+        """Run `context` through every configured filter."""
+        ...
+
+
+class Pipeline(Pipe):
     """Immutable, thread-safe Pipes & Filters runner built by PipelineBuilder."""
 
     def __init__(self, filters: Sequence[Filter]) -> None:
@@ -37,8 +50,6 @@ class Pipeline:
         """Return a new immutable Pipeline with `filter_stage` appended (ARCHITECTURE.md §3.1)."""
         return Pipeline((*self._filters, filter_stage))
 
-    addFilter = add_filter
-
     def execute(self, context: PipelineContext) -> PipelineContext:
         """Execute all filters sequentially with fail-closed short-circuiting on exception."""
         current = context
@@ -46,8 +57,3 @@ class Pipeline:
             current = stage.process(current)
             current = current.with_filter_record(stage.filter_name)
         return current
-
-
-# ARCHITECTURE.md (§3.1 & §4) canonical name aliases
-Pipe = Pipeline
-InboundPipeline = Pipeline
