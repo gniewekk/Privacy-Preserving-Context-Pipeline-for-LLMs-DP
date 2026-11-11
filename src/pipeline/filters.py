@@ -28,7 +28,7 @@ from domain.models import (
     PDFExtractionPolicy,
     SecurityContext,
 )
-from domain.protocols import AuditWriter, LocalOCREngine, ResidencyPolicyEngine
+from domain.protocols import AuditWriter, LanguageDetector, LocalOCREngine, ResidencyPolicyEngine
 from pipeline.context import PipelineContext
 from pipeline.filter import Filter
 from strategies.base import StrategySelector
@@ -53,27 +53,6 @@ _PDF_STRING_TOKEN_PATTERN = re.compile(
     rb"\(([^()\\]*(?:\\.[^()\\]*)*)\)|<([0-9A-Fa-f]{2,})>"
 )
 _MAX_DECOMPRESSED_PDF_STREAM_BYTES = 10 * 1024 * 1024  # 10 MB safety cap against zip bombs
-
-_POLISH_DIACRITICS = frozenset("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
-_POLISH_MARKERS = frozenset(
-    {
-        "jest",
-        "oraz",
-        "który",
-        "która",
-        "pacjent",
-        "klient",
-        "faktura",
-        "mieszka",
-        "zamieszkały",
-        "urodzony",
-        "skarży",
-        "się",
-        "przy",
-        "ulicy",
-    }
-)
-
 
 def _extract_bt_et_fragments(content_bytes: bytes) -> list[str]:
     """Extract literal and hex-encoded text strings from PDF BT...ET blocks."""
@@ -250,7 +229,10 @@ class DocumentExtractorFilter(Filter):
 
 
 class LanguageDetectorFilter(Filter):
-    """Detects prompt or ToolCall language ('pl' vs 'en') before PII detection."""
+    """Detects prompt or ToolCall language before PII detection."""
+
+    def __init__(self, detector: LanguageDetector) -> None:
+        self._detector = detector
 
     @property
     def filter_name(self) -> str:
@@ -263,12 +245,7 @@ class LanguageDetectorFilter(Filter):
         if not text.strip():
             return context
 
-        has_pl_diacritics = any(ch in _POLISH_DIACRITICS for ch in text)
-        words = {w.strip(".,!?;:()[]{}\"'").lower() for w in text.split()}
-        has_pl_markers = bool(words & _POLISH_MARKERS)
-
-        detected_lang = "pl" if (has_pl_diacritics or has_pl_markers) else "en"
-        return context.model_copy(update={"language": detected_lang})
+        return context.model_copy(update={"language": self._detector.detect(text)})
 
 
 class PIIDetectorFilter(Filter):

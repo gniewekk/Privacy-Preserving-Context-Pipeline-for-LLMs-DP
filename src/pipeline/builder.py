@@ -11,6 +11,7 @@ from domain.exceptions import PipelineConfigurationError
 from domain.models import AuditLevel, DataClass, EntityType, PDFExtractionPolicy
 from domain.protocols import (
     AuditWriter,
+    LanguageDetector,
     LocalOCREngine,
     ResidencyPolicyEngine,
     TokenizationVault,
@@ -24,6 +25,7 @@ from pipeline.filters import (
     PIIDetectorFilter,
     ResidencyPolicyFilter,
 )
+from pipeline.language import default_language_detector
 from strategies.base import (
     AnonymizationStrategy,
     StrategySelector,
@@ -50,6 +52,7 @@ class PipelineBuilder:
         self._re_id_risk_threshold: float | None = None
         self._pdf_policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR
         self._ocr_engine: LocalOCREngine | None = None
+        self._language_detector: LanguageDetector = default_language_detector()
         self._audit_writer: AuditWriter | None = None
         self._risk_assessment_filters: list[Filter] = []
         self._custom_filters: list[Filter] = []
@@ -67,6 +70,11 @@ class PipelineBuilder:
     def with_detector(self, detector: PIIDetector) -> Self:
         """Register a PIIDetector strategy in the detection stage."""
         self._detectors.append(detector)
+        return self
+
+    def with_language_detector(self, detector: LanguageDetector) -> Self:
+        """Configure the language detector used before PII detection."""
+        self._language_detector = detector
         return self
 
     def with_detectors(self, detectors: Sequence[PIIDetector]) -> Self:
@@ -201,7 +209,7 @@ class PipelineBuilder:
                 ocr_engine=self._ocr_engine,
                 audit_writer=self._audit_writer,
             ),
-            LanguageDetectorFilter(),
+            LanguageDetectorFilter(self._language_detector),
             PIIDetectorFilter(
                 detectors=self._detectors,
                 k_anonymity_threshold=self._k_anonymity_threshold,

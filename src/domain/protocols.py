@@ -50,6 +50,15 @@ class LocalOCREngine(Protocol):
 
 
 @runtime_checkable
+class LanguageDetector(Protocol):
+    """Language detection strategy used before language-specific PII detectors."""
+
+    def detect(self, text: str) -> str:
+        """Return a normalized ISO-639-1 language code or ``unknown``."""
+        ...
+
+
+@runtime_checkable
 class TokenizationVault(Protocol):
     """Token vault interface implemented by both VaultProxy and VaultCore (ADR-004)."""
 

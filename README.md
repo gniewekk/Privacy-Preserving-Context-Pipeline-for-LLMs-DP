@@ -15,7 +15,7 @@ Requires Python 3.12+.
 # pip
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"          # add ",ner" for torch + transformers
+pip install -e ".[dev]"
 
 # or uv
 uv sync --extra dev

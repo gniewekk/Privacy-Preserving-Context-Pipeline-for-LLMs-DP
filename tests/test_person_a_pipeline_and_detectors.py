@@ -67,6 +67,7 @@ from pipeline import (
     PipelineBuilder,
     PipelineContext,
     PipelineProxy,
+    StatisticalLanguageDetector,
 )
 from strategies import (
     MaskingStrategy,
@@ -184,6 +185,47 @@ def test_two_transformer_ner_detectors_english_and_polish() -> None:
     assert pl_by_type[EntityType.ORGANIZATION] == "Orlen S.A."
     assert pl_by_type[EntityType.LOCATION] == "Krakowie"
     assert en_detector.detect(pl_prompt, language="pl") == ()
+
+
+def test_language_detector_uses_statistical_detection_for_english_and_polish() -> None:
+    """Verify automatic language detection is not based on marker-word heuristics."""
+    detector = StatisticalLanguageDetector()
+
+    assert detector.detect("John Smith works at a hospital in London.") == "en"
+    assert detector.detect("Jan Kowalski mieszka w Warszawie.") == "pl"
+    assert detector.detect("これは日本語の文章です。") == "unknown"
+
+
+def test_real_english_transformer_model_detects_entities() -> None:
+    """Verify the default English checkpoint can load and perform real inference."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    detector = EnglishTransformerNERDetector(enable_lowercase_fallback=False)
+    entities = detector.detect(
+        "John Smith works at Microsoft in London.",
+        language="en",
+    )
+
+    assert entities
+    assert any(entity.entity_type == EntityType.PERSON for entity in entities)
+    assert any(entity.entity_type == EntityType.LOCATION for entity in entities)
+
+
+def test_real_polish_transformer_model_detects_entities() -> None:
+    """Verify the default Polish checkpoint can load and perform real inference."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    detector = PolishTransformerNERDetector(enable_lowercase_fallback=False)
+    entities = detector.detect(
+        "Jan Kowalski mieszka w Warszawie.",
+        language="pl",
+    )
+
+    assert entities
+    assert any(entity.entity_type == EntityType.PERSON for entity in entities)
+    assert any(entity.entity_type == EntityType.LOCATION for entity in entities)
 
 
 def test_polish_and_us_official_checksum_validators() -> None:
