@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from langdetect import DetectorFactory, detect_langs  # type: ignore[import-untyped]
+
 from domain.protocols import LanguageDetector
 
 
@@ -13,14 +15,6 @@ class StatisticalLanguageDetector:
         supported_languages: frozenset[str] = frozenset({"en", "pl"}),
         min_confidence: float = 0.80,
     ) -> None:
-        try:
-            from langdetect import DetectorFactory  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise RuntimeError(
-                "The `langdetect` package is required for automatic "
-                "language detection. Install it with `pip install .`."
-            ) from exc
-
         if not supported_languages:
             raise ValueError("At least one language must be configured.")
         self._supported_languages = frozenset(
@@ -36,12 +30,7 @@ class StatisticalLanguageDetector:
         if not text.strip():
             return "unknown"
 
-        try:
-            from langdetect import detect_langs
-            predictions = detect_langs(text)
-        except (ImportError, ValueError):
-            return "unknown"
-
+        predictions = detect_langs(text)
         if not predictions:
             return "unknown"
         prediction = predictions[0]

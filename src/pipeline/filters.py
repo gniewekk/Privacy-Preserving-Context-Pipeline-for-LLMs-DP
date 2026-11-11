@@ -31,7 +31,6 @@ from domain.models import (
 from domain.protocols import AuditWriter, LanguageDetector, LocalOCREngine, ResidencyPolicyEngine
 from pipeline.context import PipelineContext
 from pipeline.filter import Filter
-from pipeline.language import default_language_detector
 from strategies.base import StrategySelector
 
 # Regex helpers for local, zero-network PDF metadata stripping & text stream extraction
@@ -232,8 +231,8 @@ class DocumentExtractorFilter(Filter):
 class LanguageDetectorFilter(Filter):
     """Detects prompt or ToolCall language before PII detection."""
 
-    def __init__(self, detector: LanguageDetector | None = None) -> None:
-        self._detector = detector or default_language_detector()
+    def __init__(self, detector: LanguageDetector) -> None:
+        self._detector = detector
 
     @property
     def filter_name(self) -> str:

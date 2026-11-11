@@ -17,10 +17,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ner = [
-    "torch>=2.2",
-    "transformers>=4.40",
-]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",

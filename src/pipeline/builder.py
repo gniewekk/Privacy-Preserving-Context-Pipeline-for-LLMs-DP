@@ -25,6 +25,7 @@ from pipeline.filters import (
     PIIDetectorFilter,
     ResidencyPolicyFilter,
 )
+from pipeline.language import default_language_detector
 from strategies.base import (
     AnonymizationStrategy,
     StrategySelector,
@@ -51,7 +52,7 @@ class PipelineBuilder:
         self._re_id_risk_threshold: float | None = None
         self._pdf_policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR
         self._ocr_engine: LocalOCREngine | None = None
-        self._language_detector: LanguageDetector | None = None
+        self._language_detector: LanguageDetector = default_language_detector()
         self._audit_writer: AuditWriter | None = None
         self._risk_assessment_filters: list[Filter] = []
         self._custom_filters: list[Filter] = []
