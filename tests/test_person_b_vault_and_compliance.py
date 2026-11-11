@@ -14,6 +14,7 @@ from detectors.regex import RegexPIIDetector
 from domain.exceptions import (
     KeyExpiredError,
     PipelineConfigurationError,
+    TokenExpiredError,
     VaultError,
     VaultIntegrityError,
 )
@@ -28,13 +29,20 @@ from domain.models import (
     EndpointMetadata,
     EntityType,
     KeyStatus,
+    Permission,
     RotationStrategy,
+    SecurityContext,
+    SecurityPrincipal,
     TokenRecord,
 )
-from domain.protocols import KMS
+from domain.protocols import KMS, TokenizationVault
 from pipeline.builder import PipelineBuilder
 from pipeline.context import PipelineContext
 from vault.keys import InMemoryKMS, KeyRotation
+from vault.vault import VaultCore
+
+PESEL = "44051401458"
+PERSON = "Jan Kowalski"
 
 
 class FakeClock:
@@ -58,6 +66,27 @@ def clock() -> FakeClock:
 @pytest.fixture
 def kms(clock: FakeClock) -> InMemoryKMS:
     return InMemoryKMS(AESGCM.generate_key(bit_length=256), clock=clock)
+
+
+@pytest.fixture
+def core(kms: InMemoryKMS, clock: FakeClock) -> VaultCore:
+    return VaultCore(kms, clock=clock)
+
+
+def _context(
+    data_class: DataClass = DataClass.GENERAL,
+    session_id: str | None = "sess_1",
+    tenant_id: str = "tenant_a",
+) -> SecurityContext:
+    return SecurityContext(
+        request_id="req_1", tenant_id=tenant_id, session_id=session_id, data_class=data_class
+    )
+
+
+def _principal(*permissions: Permission, tenant_id: str = "tenant_a") -> SecurityPrincipal:
+    return SecurityPrincipal(
+        principal_id="svc_a", tenant_id=tenant_id, permissions=frozenset(permissions)
+    )
 
 
 def _token_record(**overrides: object) -> TokenRecord:
@@ -329,3 +358,177 @@ def test_key_rotation_schedule_rotates_keks_older_than_90_days(
 
     assert rotated == {DataClass.MEDICAL: "kek_medical_v2"}
     assert scheduler.due() == ()
+
+
+# --- VaultCore (AES-256-GCM token storage) ----------------------------------------------
+
+
+def test_vault_core_round_trips_value_and_binds_record_metadata(core: VaultCore) -> None:
+    assert isinstance(core, TokenizationVault)
+    ctx = _context(DataClass.MEDICAL)
+
+    record = core.tokenize(PESEL, EntityType.PESEL, ctx)
+
+    assert record.token_id.startswith("tok_")
+    assert record.entity_type is EntityType.PESEL
+    assert (record.tenant_id, record.request_id, record.session_id) == (
+        "tenant_a",
+        "req_1",
+        "sess_1",
+    )
+    assert record.expires_at == record.created_at + timedelta(hours=24)
+    assert PESEL.encode() not in record.encrypted_value
+    assert core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), ctx) == PESEL
+
+
+def test_vault_core_uses_fresh_nonce_and_token_id_per_encryption(core: VaultCore) -> None:
+    records = [core.tokenize(PERSON, EntityType.PERSON, _context()) for _ in range(1000)]
+
+    assert len({r.nonce for r in records}) == 1000
+    assert len({r.token_id for r in records}) == 1000
+    assert len({r.encrypted_value for r in records}) == 1000
+
+
+def test_vault_core_rejects_token_past_ttl(core: VaultCore, clock: FakeClock) -> None:
+    record = core.tokenize(PESEL, EntityType.PESEL, _context())
+    clock.advance(timedelta(hours=24))
+
+    with pytest.raises(TokenExpiredError) as exc_info:
+        core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), _context())
+    assert PESEL not in str(exc_info.value)
+
+
+def test_vault_core_rejects_unknown_token(core: VaultCore) -> None:
+    with pytest.raises(VaultError, match="not available"):
+        core.de_tokenize("tok_missing", _principal(Permission.DETOKENIZE), _context())
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["encrypted_value", "nonce", "tenant_id", "request_id", "entity_type", "expires_at"],
+)
+def test_vault_core_detects_tampered_record(core: VaultCore, field: str) -> None:
+    record = core.tokenize(PESEL, EntityType.PESEL, _context())
+    tampered_values: dict[str, object] = {
+        "encrypted_value": bytes([record.encrypted_value[0] ^ 0x01]) + record.encrypted_value[1:],
+        "nonce": os.urandom(12),
+        "tenant_id": "tenant_b",
+        "request_id": "req_other",
+        "entity_type": EntityType.NIP,
+        "expires_at": record.created_at + timedelta(days=365),
+    }
+    core._records[record.token_id] = record.model_copy(update={field: tampered_values[field]})
+
+    with pytest.raises(VaultIntegrityError) as exc_info:
+        core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), _context())
+    message = str(exc_info.value)
+    assert PESEL not in message
+    assert "InvalidTag" not in message
+
+
+def test_vault_core_detects_ciphertext_swapped_between_records(core: VaultCore) -> None:
+    first = core.tokenize(PESEL, EntityType.PESEL, _context())
+    second = core.tokenize("90010112345", EntityType.PESEL, _context())
+    core._records[first.token_id] = first.model_copy(
+        update={"encrypted_value": second.encrypted_value, "nonce": second.nonce}
+    )
+
+    with pytest.raises(VaultIntegrityError):
+        core.de_tokenize(first.token_id, _principal(Permission.DETOKENIZE), _context())
+
+
+def test_rotation_re_encrypt_moves_tokens_to_new_key_and_shreds_old_one(
+    core: VaultCore, kms: InMemoryKMS
+) -> None:
+    ctx = _context(DataClass.MEDICAL)
+    before = core.tokenize(PESEL, EntityType.PESEL, ctx)
+
+    new_kek = core.rotate_keys(_principal(Permission.ROTATE_KEYS), ctx, RotationStrategy.RE_ENCRYPT)
+
+    after = core.find_record(before.token_id)
+    assert after is not None
+    assert new_kek == "kek_medical_v2"
+    assert after.key_id != before.key_id
+    assert after.nonce != before.nonce
+    assert kms.key_status(before.key_id) is KeyStatus.EXPIRED
+    assert core.de_tokenize(before.token_id, _principal(Permission.DETOKENIZE), ctx) == PESEL
+
+
+def test_rotation_retain_old_key_keeps_tokens_readable_until_ttl(
+    core: VaultCore, kms: InMemoryKMS, clock: FakeClock
+) -> None:
+    ctx = _context(DataClass.FINANCIAL)
+    record = core.tokenize(PESEL, EntityType.PESEL, ctx)
+
+    core.rotate_keys(_principal(Permission.ROTATE_KEYS), ctx, RotationStrategy.RETAIN_OLD_KEY)
+
+    assert core.find_record(record.token_id) == record
+    assert kms.key_status(record.key_id) is KeyStatus.DEPRECATED
+    assert core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), ctx) == PESEL
+    assert core.tokenize(PERSON, EntityType.PERSON, ctx).key_id != record.key_id
+
+    clock.advance(timedelta(hours=24))
+    with pytest.raises(TokenExpiredError):
+        core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), ctx)
+
+
+def test_rotation_expire_makes_old_tokens_unrecoverable(
+    core: VaultCore, kms: InMemoryKMS
+) -> None:
+    ctx = _context(DataClass.GENERAL)
+    record = core.tokenize(PESEL, EntityType.PESEL, ctx)
+
+    core.rotate_keys(_principal(Permission.ROTATE_KEYS), ctx, RotationStrategy.EXPIRE)
+
+    assert kms.key_status(record.key_id) is KeyStatus.EXPIRED
+    with pytest.raises(KeyExpiredError):
+        core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), ctx)
+
+
+def test_rotation_only_affects_requested_data_class(core: VaultCore, kms: InMemoryKMS) -> None:
+    medical = core.tokenize(PESEL, EntityType.PESEL, _context(DataClass.MEDICAL))
+    general = core.tokenize(PERSON, EntityType.PERSON, _context(DataClass.GENERAL))
+
+    core.rotate_keys(
+        _principal(Permission.ROTATE_KEYS), _context(DataClass.MEDICAL), RotationStrategy.EXPIRE
+    )
+
+    assert kms.key_status(medical.key_id) is KeyStatus.EXPIRED
+    assert kms.key_status(general.key_id) is KeyStatus.ACTIVE
+    assert core.find_record(general.token_id) == general
+
+
+def test_re_encrypt_skips_tokens_whose_key_was_already_revoked(
+    core: VaultCore, kms: InMemoryKMS
+) -> None:
+    ctx = _context(DataClass.MEDICAL)
+    lost = core.tokenize(PESEL, EntityType.PESEL, ctx)
+    kms.set_key_status(lost.key_id, KeyStatus.REVOKED)
+    survivor = core.tokenize(PERSON, EntityType.PERSON, ctx)
+
+    core.rotate_keys(_principal(Permission.ROTATE_KEYS), ctx, RotationStrategy.RE_ENCRYPT)
+
+    assert core.de_tokenize(survivor.token_id, _principal(Permission.DETOKENIZE), ctx) == PERSON
+    with pytest.raises(KeyExpiredError):
+        core.de_tokenize(lost.token_id, _principal(Permission.DETOKENIZE), ctx)
+
+
+def test_expire_deletes_token_idempotently(core: VaultCore) -> None:
+    record = core.tokenize(PESEL, EntityType.PESEL, _context())
+
+    assert core.expire(record.token_id) is True
+    assert core.expire(record.token_id) is False
+    assert core.find_record(record.token_id) is None
+
+
+def test_vault_core_never_leaks_plaintext_to_logs_or_repr(
+    core: VaultCore, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    ctx = _context(DataClass.MEDICAL)
+    record = core.tokenize(PESEL, EntityType.PESEL, ctx)
+    core.de_tokenize(record.token_id, _principal(Permission.DETOKENIZE), ctx)
+    core.rotate_keys(_principal(Permission.ROTATE_KEYS), ctx)
+
+    assert PESEL not in caplog.text
+    assert PESEL not in repr(record) + str(record)
