@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from detectors.base import PIIDetector, register_detector, resolve_overlapping_spans
 from domain.models import DataClass, DetectedEntity, EntityType
@@ -87,11 +87,11 @@ class NERPIIDetector(PIIDetector):
             return self._ner_pipeline
 
         try:
-            from transformers import pipeline as hf_pipeline  # type: ignore[import-not-found]
+            from transformers import pipeline as hf_pipeline
         except ImportError as exc:
             raise RuntimeError(
                 "HuggingFace `transformers` and `torch` are required to load "
-                f"{self._model_name!r}. Install optional dependencies via `pip install .[ner]` "
+                f"{self._model_name!r}. Install project dependencies via `pip install .` "
                 "or inject a `ner_pipeline` callable."
             ) from exc
 
@@ -100,13 +100,14 @@ class NERPIIDetector(PIIDetector):
             if self._model_name == DEFAULT_POLISH_NER_MODEL
             else self._model_name
         )
-        loaded_pipeline: Any = hf_pipeline(
+        pipeline_factory = cast(Callable[..., Any], hf_pipeline)
+        loaded_pipeline: Any = pipeline_factory(
             task="ner",
             model=hf_checkpoint,
             aggregation_strategy="simple",
         )
         self._ner_pipeline = loaded_pipeline
-        return loaded_pipeline  # type: ignore[no-any-return]
+        return cast(NERPipelineCallable, loaded_pipeline)
 
     def _convert_predictions(
         self,
