@@ -1,3 +1,11 @@
-"""Strategy pattern interfaces and implementations for PII/PHI detection."""
+"""Interfejsy i implementacje strategii detekcji PII/PHI/QID."""
 
-__all__: list[str] = []
+from detectors.base import PIIDetector
+from detectors.phi_detector import PHIDetector
+from detectors.qid_detector import QIDDetector
+
+__all__ = [
+    "PHIDetector",
+    "PIIDetector",
+    "QIDDetector",
+]
