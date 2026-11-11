@@ -101,7 +101,7 @@ class PipelineBuilder:
         return self
 
     def with_response_restorer(self, response_restorer: Any) -> Self:
-        """Bind the ResponseRestorer caretaker for reversible session restoration."""
+        """Bind the ResponseRestorer for reversible session restoration."""
         self._response_restorer = response_restorer
         return self
 

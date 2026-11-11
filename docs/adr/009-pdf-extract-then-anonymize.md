@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-10
-- **Component:** `src/pipeline/` (`DocumentExtractorFilter`, `InboundPipeline`)
+- **Component:** `src/pipeline/` (`DocumentExtractorFilter`, `Pipeline`)
 
 ---
 

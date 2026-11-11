@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-10
-- **Component:** `src/pipeline/` (`StreamingResponseRestorer`, `OutboundPipeline`)
+- **Component:** `src/pipeline/` (`StreamingResponseRestorer`, `Outbound Pipeline`)
 
 ---
 

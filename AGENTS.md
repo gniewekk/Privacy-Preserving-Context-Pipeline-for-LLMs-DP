@@ -56,7 +56,7 @@ src/
 │   ├── proxy.py     # VaultProxy enforcing AuthN/AuthZ and writing immutable audit events via AuditWriter
 │   └── keys.py      # KMS with key_id versioning, KeyRotation scheduling, and TTL expiration
 ├── state/           # Memento pattern for safe request-scoped context restoration
-│   └── memento.py   # PipelineMemento & ResponseRestorer (ResponseRestorer)
+│   └── memento.py   # PipelineMemento & ResponseRestorer
 └── dispatchers/     # Abstract LLMDispatcher interface and provider adapters
 ```
 
@@ -115,7 +115,7 @@ src/
   - **Encapsulation Boundary:** Direct instantiation or invocation of `VaultCore` outside `src/vault/proxy.py` and dedicated unit tests is **strictly forbidden**. Pipeline filters and restoration services may only hold a reference to `VaultProxy` (typed as `TokenizationVault`).
 
 ### 3.5 Memento Pattern (`src/state/memento.py`)
-- **`PipelineMemento` & `ResponseRestorer` (ResponseRestorer):**
+- **`PipelineMemento` & `ResponseRestorer`:**
   - The Originator (`PipelineContext`) creates an opaque `PipelineMemento` capturing request-scoped state: `session_id`, `token_map` (token-to-`EntityMetadata` bindings without raw PII), `version` (incremented on Dynamic Memento Expansion during agentic `ToolCall` execution by `ToolExecutionMiddleware`), `applied_filters` (`FilterRecord` list), `timestamp`, `key_id` version, and integrity `checksum`.
   - **Opaque State:** `PipelineMemento` exposes no public getters or mutable fields for raw PII values; original values exist exclusively encrypted inside `VaultCore`.
   - **`ResponseRestorer`:** Manages the lifecycle of mementos per `request_id` / `session_id` with strict TTL eviction (`RetentionPolicyEngine` sets `expires_at`, `RetentionWorker` purges) and zero persistence of raw plaintext PII.

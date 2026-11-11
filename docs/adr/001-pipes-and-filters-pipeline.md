@@ -62,5 +62,5 @@ Publishing prompts and intermediate sanitization states as asynchronous events a
 
 - **Scenario 1 (Pseudonymization Happy Path):** Inbound `PIIDetectorFilter` -> `AnonymizationFilter` replaces PII with `<PERSON_1>` tokens; outbound `ResponseRestorer` restores values for authorized callers.
 - **Scenario 3 (EU Data Residency Block for PHI):** `ResidencyPolicyFilter` inspects `context.detected_entities` for `PHI` tags and compares against `context.target_endpoint.region`, raising `ResidencyViolationError` before any network call occurs.
-- **Scenario 4 (Re-identification Risk / $k$-Anonymity):** `RiskAssessmentFilter` evaluates quasi-identifier combinations in `PipelineContext` and invokes generalization or halts execution if $k < k_{\text{target}}$.
+- **Scenario 4 (Re-identification Risk / $k$-Anonymity):** `RiskAssessmentFilter` evaluates quasi-identifier combinations in `PipelineContext` and invokes generalization or halts execution if $k < k_{\text{min}}$.
 - **Scenario 6 (Extensibility):** New filters can be inserted into the pipe without modifying any existing filter implementation.

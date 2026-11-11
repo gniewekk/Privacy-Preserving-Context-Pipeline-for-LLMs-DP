@@ -19,7 +19,7 @@ Furthermore, Scenario 6 requires adding a new detector/strategy (such as Polish 
 
 ## 2. Decision
 
-We apply the **Strategy Pattern** to both detection (`src/detectors/`) and anonymization (`src/strategies/`), backed by a declarative `StrategyRegistry` / `StrategySelector`.
+We apply the **Strategy Pattern** to both detection (`src/detectors/`) and anonymization (`src/strategies/`), backed by `DetectorRegistry` and `StrategySelector`.
 
 ### 1. `PIIDetector` Strategy Interface
 ```python
@@ -36,15 +36,15 @@ class PIIDetector(Protocol):
 class AnonymizationStrategy(Protocol):
     @property
     def strategy_id(self) -> str: ...
-    def is_reversible(self) -> bool: ...
+    def can_reverse(self) -> bool: ...
     def anonymize(
-        self, entity: DetectedEntity, request: AnonymizationRequest
+        self, entity: DetectedEntity, context: AnonymizationRequest
     ) -> AnonymizationResult: ...
 ```
 - Concrete strategies:
   - `MaskingStrategy`: Irreversible character replacement (`*` or `[REDACTED_TYPE]`).
   - `TokenizationStrategy`: Generates a deterministic or random placeholder (`<PERSON_1>`) and stores the plaintext mapping in `VaultProxy` using AES-256-GCM.
-  - `GeneralizationStrategy`: Maps fine-grained quasi-identifiers (e.g., `age=34`, `city="Sępólno Krajeńskie"`) up a `GeneralizationHierarchy` (`age="30-39"`, `region="Kujawsko-Pomorskie"`) until $k \ge k_{\text{target}}$.
+  - `GeneralizationStrategy`: Maps fine-grained quasi-identifiers (e.g., `age=34`, `city="Sępólno Krajeńskie"`) up a `GeneralizationHierarchy` (`age="30-39"`, `region="Kujawsko-Pomorskie"`) until $k \ge k_{\text{min}}$.
 
 ---
 

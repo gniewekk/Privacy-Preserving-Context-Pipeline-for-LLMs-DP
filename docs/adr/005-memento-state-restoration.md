@@ -25,7 +25,7 @@ We implement the **Memento Pattern** (`src/state/memento.py`) comprising three s
 1. **`PipelineContext` (`Originator`):**
    - Creates an immutable `PipelineMemento` snapshot at the end of inbound tokenization and consumes the memento during outbound response restoration (`restore_response()`).
 2. **`PipelineMemento` (`Memento`):**
-   - Captures opaque state: `request_id`, `tenant_id`, `created_at`, `expires_at`, `key_version_id`, `residency_jurisdiction`, and an encapsulated read-only mapping of `placeholder -> token_id`.
+   - Captures opaque state: `request_id`, `tenant_id`, `created_at`, `expires_at`, `key_id`, `residency_jurisdiction`, and an encapsulated read-only mapping of `placeholder -> token_id`.
    - **Strict Encapsulation:** `PipelineMemento` never stores raw plaintext PII—only opaque `token_id` references whose ciphertexts reside in `VaultCore`. External classes (including `ResponseRestorer`) can inspect only narrow metadata (`request_id`, `expires_at`), while the internal mapping state is accessible exclusively to the authorized `PipelineContext`.
 3. **`ResponseRestorer`:**
    - Stores and retrieves `PipelineMemento` instances indexed by `request_id` for the duration of the LLM call, enforcing strict TTL eviction and single-use/idempotent lifecycle cleanup.
@@ -60,4 +60,4 @@ Caching `{ "<PERSON_1>": "Jan Kowalski" }` in memory inside `PipelineMemento` to
 
 - **Scenario 1 (Pseudonymization & Restoration):** `PipelineContext` snapshots `<PERSON_1> -> tok_id` into `PipelineMemento` before LLM dispatch and uses it to drive authorized detokenization via `VaultProxy` when the LLM response arrives.
 - **Scenario 2 (Unauthorized Detokenization):** Even if a caller possesses a valid `request_id` Memento handle, restoration delegates every token lookup to `VaultProxy.de_tokenize()`, which blocks unauthorized principals and writes a `DENIED` audit log.
-- **Scenario 5 (Key Rotation & Expiration):** `PipelineMemento` records `key_version_id` and `expires_at`; expired mementos or tokens encrypted under revoked keys fail closed during restoration.
+- **Scenario 5 (Key Rotation & Expiration):** `PipelineMemento` records `key_id` and `expires_at`; expired mementos or tokens encrypted under revoked keys fail closed during restoration.

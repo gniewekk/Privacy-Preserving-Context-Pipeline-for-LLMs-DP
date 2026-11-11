@@ -8,7 +8,7 @@
 
 ## 1. Context & Problem
 
-In agentic LLM workflows (Scenario 5.6 in `ARCHITECTURE.md`), the model does not merely reply with free text—it emits structured `ToolCall` / `ToolCall` requests (e.g., `get_birth_date(user_id="<PERSON_1>")`) to query internal databases or APIs.
+In agentic LLM workflows (Scenario 5.6 in `ARCHITECTURE.md`), the model does not merely reply with free text—it emits structured `ToolCall` requests (e.g., `get_birth_date(user_id="<PERSON_1>")`) to query internal databases or APIs.
 
 This introduces two architectural challenges:
 1. **Zero Plaintext Exposure to the LLM:** The LLM only knows the pseudonym `<PERSON_1>`, whereas the internal database requires the real identifier (`"Jan Kowalski"`). Conversely, the database response (`"1990-01-01"`) contains new sensitive PII that must never be returned to the LLM in plaintext.

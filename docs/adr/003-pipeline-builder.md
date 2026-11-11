@@ -24,14 +24,14 @@ We implement the **Builder Pattern** via `PipelineBuilder` (`src/pipeline/builde
 ```python
 pipeline = (
     PipelineBuilder()
-    .with_detector(RegexPIIDetector.default_eu())
+    .with_detector(RegexPIIDetector())
     .with_detector(NERPIIDetector())
-    .with_strategy(EntityType.PERSON, TokenizationStrategy(vault_proxy))
-    .with_strategy(EntityType.PESEL, MaskingStrategy())
-    .with_k_anonymity_threshold(k=5, hierarchy=default_hierarchy)
+    .with_anonymization_strategy(EntityType.PERSON, TokenizationStrategy(reversible=True))
+    .with_anonymization_strategy(EntityType.PESEL, MaskingStrategy())
+    .with_k_anonymity_threshold(5)
     .with_residency_policy(EUResidencyPolicy(allowed_regions=frozenset({"eu-central-1", "eu-west-1"})))
     .with_vault_proxy(vault_proxy)
-    .with_memento_caretaker(caretaker)
+    .with_response_restorer(response_restorer)
     .build()
 )
 ```
@@ -39,8 +39,8 @@ pipeline = (
 ### Build-Time Invariants Enforced by `.build()`
 1. **Mandatory Detection Stage:** At least one `PIIDetector` must be registered; otherwise `.build()` raises `PipelineConfigurationError`.
 2. **Canonical Stage Ordering:** Regardless of the order in which fluent `.with_*()` methods are called by the developer, `.build()` assembles the internal filter chain in the canonical security order:
-   `PIIDetectorFilter` -> `RiskAssessmentFilter` -> `AnonymizationFilter` -> `ResidencyPolicyFilter` -> `AuditContextFilter`.
-3. **Reversible Strategy Coupling:** If any registered `AnonymizationStrategy.is_reversible()` is `True`, both `vault_proxy` and `memento_caretaker` must be present.
+   `DocumentExtractorFilter` -> `LanguageDetectorFilter` -> `PIIDetectorFilter` -> `RiskAssessmentFilter` -> `AnonymizationFilter` -> `ResidencyPolicyFilter` -> `AuditContextFilter`.
+3. **Reversible Strategy Coupling:** If any registered `AnonymizationStrategy.can_reverse()` is `True`, both `vault_proxy` and `response_restorer` must be present.
 4. **Immutability After Build:** `.build()` returns an immutable `Pipeline` containing a `tuple[Filter, ...]` that cannot be mutated at runtime.
 
 ---
@@ -61,7 +61,7 @@ Providing fixed factory methods for predefined pipeline profiles.
 
 ### Positive
 - **Fail-Fast Security Guarantees:** Invalid or insecure pipeline topologies are caught at application startup (`.build()`) rather than leaking PII at runtime.
-- **Canonical Ordering Guarantee:** Developers cannot accidentally place `AnonymizationFilter` before `PIIDetectorFilter` even if they call `.with_strategy()` before `.with_detector()`.
+- **Canonical Ordering Guarantee:** Developers cannot accidentally place `AnonymizationFilter` before `PIIDetectorFilter` even if they call `.with_anonymization_strategy()` before `.with_detector()`.
 - **Clean Test Fixtures:** Integration and abuse tests can fluently construct minimal or specialized pipelines in 4–5 lines of readable code.
 
 ### Negative / Mitigations
@@ -74,4 +74,4 @@ Providing fixed factory methods for predefined pipeline profiles.
 - **Scenario 1 & 2:** Ensures `VaultProxy` and `ResponseRestorer` are wired whenever reversible tokenization is enabled.
 - **Scenario 3 (EU Data Residency):** Guarantees `ResidencyPolicyFilter` is positioned before external LLM dispatch whenever residency policies are configured.
 - **Scenario 4 ($k$-Anonymity):** Validates that a `GeneralizationHierarchy` is bound when `.with_k_anonymity_threshold(k)` is configured.
-- **Scenario 6 (IBAN Extension):** Allows registering `PolishIBANDetector` and its strategy fluently via `.with_detector(...)` and `.with_strategy(...)` without modifying `PipelineBuilder`.
+- **Scenario 6 (IBAN Extension):** Allows registering `PolishIBANDetector` and its strategy fluently via `.with_detector(...)` and `.with_anonymization_strategy(...)` without modifying `PipelineBuilder`.

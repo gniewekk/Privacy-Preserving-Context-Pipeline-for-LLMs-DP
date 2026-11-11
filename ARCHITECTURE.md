@@ -67,9 +67,9 @@ flowchart TD
     Client -->|"zapytanie z PII"| PipelineProxy
     PipelineProxy --> InboundPipeline
 
-    InboundPipeline -->|"wykrywanie PII"| D1["🔍 Detector Filter"]
-    D1 -->|"strategia maskowania"| D2["🎭 Anonymization Filter\n(Strategy)"]
-    D2 -->|"ocena ryzyka re-ID"| D3["📊 Re-ID Risk Filter"]
+    InboundPipeline -->|"wykrywanie PII"| D1["🔍 PIIDetectorFilter"]
+    D1 -->|"strategia maskowania"| D2["🎭 AnonymizationFilter\n(Strategy)"]
+    D2 -->|"ocena ryzyka re-ID"| D3["📊 RiskAssessmentFilter"]
     D3 -->|"weryfikacja residency"| ResidencyPolicyFilter
 
     ResidencyPolicyFilter -->|"blokada jeśli naruszenie"| AuditLog
@@ -141,7 +141,7 @@ Outbound Pipeline zawiera `OutputPIIDetector`, uruchamiany przed `ResponseRestor
 
 **Kluczowe właściwości:**
 
-- **Kolejność filtrów jest deterministyczna** — `LanguageDetector` musi działać przed `PIIDetector`, bo reguły wykrywania PESEL różnią się od SSN.
+- **Kolejność filtrów jest deterministyczna** — `LanguageDetectorFilter` musi działać przed `PIIDetectorFilter`, bo reguły wykrywania PESEL różnią się od SSN.
 - **Short-circuit semantics** — filtr `ResidencyPolicyFilter` może przerwać łańcuch i zwrócić błąd bez dalszego przetwarzania.
 - **Konfigurowalne łańcuchy** — `PipelineBuilder` (patrz §3.3) pozwala składać różne łańcuchy dla różnych kontekstów (np. pipeline dla danych medycznych vs. finansowych).
 
@@ -178,30 +178,30 @@ classDiagram
     }
     class AnonymizationStrategy {
         <<interface>>
-        +anonymize(value: string, entity: DetectedEntity) AnonymizationResult
+        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
         +can_reverse() bool
     }
     class TokenizationStrategy {
         -vault: TokenizationVault
-        +anonymize(value, entity) AnonymizationResult
+        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
         +can_reverse() bool
     }
     class MaskingStrategy {
         -mask_char: char
         -preserve_length: bool
-        +anonymize(value, entity) AnonymizationResult
+        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
         +can_reverse() bool
     }
     class GeneralizationStrategy {
         -k_min: int
         -hierarchy: GeneralizationHierarchy
-        +anonymize(value, entity) AnonymizationResult
+        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
         +can_reverse() bool
     }
     class SynthesisStrategy {
         -synthetic_data_generator: Generator
         -mapping_store: PipelineMemento
-        +anonymize(value, entity) AnonymizationResult
+        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
         +can_reverse() bool
     }
 
@@ -291,9 +291,9 @@ sequenceDiagram
         VaultProxy->>VaultCore: de_tokenize(token)
         VaultCore->>KMS: get_decryption_key(key_id)
         KMS-->>VaultCore: key
-        VaultCore-->>VaultProxy: originalValue
-        VaultProxy->>AuditLog: log(SUCCESS, token, identity, timestamp)
-        VaultProxy-->>Service: originalValue
+        VaultCore-->>VaultProxy: original_value
+        VaultProxy->>AuditLog: log(GRANTED, token, identity, timestamp)
+        VaultProxy-->>Service: original_value
     end
 ```
 
@@ -302,7 +302,7 @@ sequenceDiagram
 ```
 TokenRecord {
     token_id:        UUID          // publiczny identyfikator tokenu, np. <PERSON_1>
-    encrypted_value: bytes         // AES-256-GCM(originalValue, dataEncryptionKey)
+    encrypted_value: bytes         // AES-256-GCM(original_value, data_encryption_key)
     key_id:          UUID          // wskazuje na klucz w KMS
     entity_type:     EntityType    // PERSON, PESEL, IBAN, ...
     created_at:      timestamp
@@ -321,7 +321,7 @@ Memento służy dwóm celom:
 
 #### A. Przywracanie tokenów w odpowiedzi LLM
 
-`PipelineContext` (Originator) tworzy `PipelineMemento` po fazie anonimizacji. Ten snapshot zawiera mapowanie `token → metadane`, które pozwala `ResponseRestorer` (ResponseRestorer) przywrócić oryginalne wartości w odpowiedzi LLM **bez ponownego dostępu do Vault** dla każdego tokenu z osobna — jeden call, atomowe przywrócenie.
+`PipelineContext` (Originator) tworzy `PipelineMemento` po fazie anonimizacji. Ten snapshot zawiera mapowanie `token → metadane`, które pozwala `ResponseRestorer` przywrócić oryginalne wartości w odpowiedzi LLM **bez ponownego dostępu do Vault** dla każdego tokenu z osobna — jeden call, atomowe przywrócenie.
 
 #### B. Odtwarzanie stanu po awarii
 
@@ -442,7 +442,7 @@ flowchart TD
 
 | Komponent | Odpowiedzialność | Wzorzec |
 |-----------|-----------------|---------|
-| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` / `ToolCall` JSON | Proxy, Facade |
+| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` JSON | Proxy, Facade |
 | `Inbound Pipeline` | Przetwarza `PipelineContext` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
 | `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStopError`) surowe binaria lub skany bez lokalnego OCR | Filter |
 | `PIIDetector` | Hybrydowy detektor (Strategy): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Strategy |
@@ -457,8 +457,8 @@ flowchart TD
 | `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
 
 `PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`:
-- Dla obiektu `ToolCall` / `ToolCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
-- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `HardStopError(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)`.
+- Dla obiektu `ToolCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
+- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `UnsupportedMediaWithPotentialPIIError` (`HardStopError`).
 
 ```
 ToolCall {
@@ -490,9 +490,9 @@ sequenceDiagram
     User->>Proxy: query("Jan Kowalski, PESEL 90010112345...")
     Proxy->>InPipe: process(context)
 
-    Note over InPipe: [Filter 1] LanguageDetector - PL
-    Note over InPipe: [Filter 2] PIIDetector - PERSON: "Jan Kowalski", PESEL: "90010112345"
-    Note over InPipe: [Filter 3] ReIdRiskAnalyzer - LOW
+    Note over InPipe: [Filter 1] LanguageDetectorFilter - PL
+    Note over InPipe: [Filter 2] PIIDetectorFilter - PERSON: "Jan Kowalski", PESEL: "90010112345"
+    Note over InPipe: [Filter 3] RiskAssessmentFilter (ReIdRiskAnalyzer) - LOW
     Note over InPipe: [Filter 4] AnonymizationFilter
 
     InPipe->>Vault: tokenize("Jan Kowalski", PERSON)
@@ -561,7 +561,7 @@ sequenceDiagram
 flowchart TD
     A["Żądanie z danymi PHI (DataClass: MEDICAL)"] --> B
     B["ResidencyPolicyEngine"] --> C{Czy provider LLM jest w EU?}
-    C -->|"NIE (us-east-1)"| D["HardStopError: RESIDENCY_VIOLATION"]
+    C -->|"NIE (us-east-1)"| D["ResidencyViolationError (HardStopError)"]
     C -->|"TAK (eu-west-1)"| E["Kontynuuj pipeline"]
     D --> F["AuditLog: RESIDENCY_BLOCKED"]
     D --> G["HTTP 451 Unavailable For Legal Reasons"]
@@ -593,7 +593,7 @@ residency_policies:
 
 **Scenariusz:** Kontekst zawiera kombinację quasi-identyfikatorów: `zawód: neurochirurg`, `miasto: Sępólno Krajeńskie`, `wiek: 47`.
 
-`ReIdRiskAnalyzer` szacuje, ile osób w Polsce pasuje do tego profilu. Jeśli `k < k_threshold` (np. k=2 < k_min=5), uruchamia `GeneralizationStrategy`.
+`ReIdRiskAnalyzer` szacuje, ile osób w Polsce pasuje do tego profilu. Jeśli `k < k_min` (np. k=2 < k_min=5), uruchamia `GeneralizationStrategy`.
 
 ```mermaid
 flowchart TD
@@ -636,9 +636,9 @@ neurochirurg
 ```mermaid
 flowchart TD
     A["KeyRotation Scheduler"] --> B
-    B["KMS: generateNewKey() - key_id_v2"] --> C
+    B["KMS: generate_new_key() - key_id_v2"] --> C
     C["TokenDB: pobierz rekordy z key_id_v1, status=ACTIVE"] --> D{Strategia rotacji}
-    D -->|"RE-ENCRYPT (domyslna)"| E["1. decrypt(value, key_v1)\n2. encrypt(value, key_v2)\n3. update key_id na v2"]
+    D -->|"RE_ENCRYPT (domyslna)"| E["1. decrypt(value, key_v1)\n2. encrypt(value, key_v2)\n3. update key_id na v2"]
     D -->|"RETAIN_OLD_KEY (legacy)"| F["key_v1: status DEPRECATED\naktywny do expires_at"]
     D -->|"EXPIRE (strict)"| G["Tokeny z key_v1: status EXPIRED\nde-tokenizacja niemozliwa"]
     E --> H["AuditLog: KEY_ROTATION_COMPLETED"]
@@ -653,9 +653,9 @@ flowchart TD
 
 | Scenariusz | Polityka kluczy | Skutek |
 |-----------|----------------|--------|
-| Standardowa rotacja | RE-ENCRYPT (atomic) | Stare tokeny działają, dane re-szyfrowane |
+| Standardowa rotacja | RE_ENCRYPT (atomic) | Stare tokeny działają, dane re-szyfrowane |
 | Koniec okresu retencji | EXPIRE | Token staje się nierozwiązywalny — prawo do zapomnienia |
-| Kompromitacja klucza | REVOKE + RE-ENCRYPT priorytetowo | Natychmiastowe re-szyfrowanie |
+| Kompromitacja klucza | REVOKE + RE_ENCRYPT priorytetowo | Natychmiastowe re-szyfrowanie |
 
 > **Uwaga:** Strategia EXPIRE powoduje **nieodwracalną utratę** możliwości de-tokenizacji. Należy upewnić się, że dane nie są już potrzebne lub zostały wcześniej zapisane przez klienta.
 
@@ -744,9 +744,9 @@ Przekazanie surowego pliku PDF bezpośrednio do multimodalnego modelu LLM grozi 
 
 Dlatego dla dokumentów PDF obowiązuje architektura **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**:
 - **Całkowita blokada surowych binariów:** Oryginalny plik PDF nigdy nie jest przekazywany do zewnętrznego API LLM.
-- **Ekstrakcja tekstu i czyszczenie metadanych:** `DocumentExtractorFilter` (np. w oparciu o lokalny parser `PyMuPDF` / `pdfplumber`) wyciąga wyłącznie warstwę tekstową oraz strukturę tabel, odrzucając wszystkie metadane dokumentu, po czym przekazuje czysty tekst do `LanguageDetector` → `PIIDetector` → `AnonymizationFilter`.
+- **Ekstrakcja tekstu i czyszczenie metadanych:** `DocumentExtractorFilter` (np. w oparciu o lokalny parser `PyMuPDF` / `pdfplumber`) wyciąga wyłącznie warstwę tekstową oraz strukturę tabel, odrzucając wszystkie metadane dokumentu, po czym przekazuje czysty tekst do `LanguageDetectorFilter` → `PIIDetectorFilter` → `AnonymizationFilter`.
 - **Polityka dla skanów i obrazów (Fail-Closed vs. Local OCR):** Jeśli PDF nie posiada warstwy tekstowej (jest skanem) lub zawiera osadzone obrazy:
-  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `HardStopError(UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII)` i rejestruje zdarzenie w `AuditLog`,
+  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `UnsupportedMediaWithPotentialPIIError` (`HardStopError`) i rejestruje zdarzenie w `AuditLog`,
   - w trybie rozszerzonym (`LOCAL_OCR_ENABLED`) obraz jest przetwarzany przez lokalny silnik OCR działający wewnątrz zaufanej granicy (bez dostępu do sieci), a rozpoznany tekst trafia do standardowej detekcji PII.
 
 **Priorytety błędów detekcji:**
@@ -837,7 +837,7 @@ Wartości PII w TokenDB
 **Model decyzyjny:**
 
 ```
-ResidencyDecision = f(DataClass, LLMProvider.Region, OrganizationPolicy)
+ResidencyDecision = f(DataClass, EndpointMetadata.region, OrganizationPolicy)
 ```
 
 **Macierz decyzji:**

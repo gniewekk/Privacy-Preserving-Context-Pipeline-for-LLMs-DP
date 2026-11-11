@@ -57,7 +57,7 @@ classDiagram
      2. If unauthorized, `VaultProxy` emits an immutable `AuditEvent(action="DETOKENIZE", outcome="DENIED", principal_id=..., token_id=...)` and raises `UnauthorizedVaultAccessError` **before** touching `VaultCore`.
      3. If authorized, it delegates to `VaultCore.de_tokenize()`, which verifies token TTL (`expires_at`), fetches the versioned AES-256-GCM key via `KMS.get_key(envelope.key_id)`, verifies Associated Authenticated Data (`AAD = tenant_id || request_id || entity_type`), decrypts the ciphertext, and logs `outcome="GRANTED"`.
 3. **Key Versioning & Lifecycle (`KMS`):**
-   - Keys have explicit states: `ACTIVE` (used for new `tokenize` operations), `DECRYPT_ONLY` (rotated out for encryption, still valid for detokenizing unexpired tokens), and `EXPIRED` / `REVOKED` (rejected with `KeyExpiredError`).
+   - Keys have explicit states: `ACTIVE` (used for new `tokenize` operations), `DEPRECATED` (rotated out for encryption, still valid for detokenizing unexpired tokens), and `EXPIRED` / `REVOKED` (rejected with `KeyExpiredError`).
 
 ---
 
@@ -86,6 +86,6 @@ Checking permissions only at the HTTP controller layer.
 
 ## 5. Compliance with Scenarios
 
-- **Scenario 1 (Authorized Pseudonymization Restoration):** `VaultProxy` verifies the caller's `DETOKENIZE` claim, records an `ALLOW` audit event, and returns decrypted PII via `VaultCore`.
+- **Scenario 1 (Authorized Pseudonymization Restoration):** `VaultProxy` verifies the caller's `DETOKENIZE` claim, records a `GRANTED` audit event, and returns decrypted PII via `VaultCore`.
 - **Scenario 2 (Unauthorized Detokenization Block + Audit):** An unauthorized caller is blocked at `VaultProxy`, receives `UnauthorizedVaultAccessError` with zero plaintext leakage, and triggers an immutable `DENIED` audit log entry.
-- **Scenario 5 (Key Rotation & Token Expiration):** `VaultProxy` gates `rotate_keys()` to `KEY_ADMIN` principals, while `VaultCore` + `KMS` seamlessly decrypt legacy tokens under `DECRYPT_ONLY` keys and reject expired tokens or `REVOKED` keys.
+- **Scenario 5 (Key Rotation & Token Expiration):** `VaultProxy` gates `rotate_keys()` to `KEY_ADMIN` principals, while `VaultCore` + `KMS` seamlessly decrypt legacy tokens under `DEPRECATED` keys and reject expired tokens or `REVOKED` keys.

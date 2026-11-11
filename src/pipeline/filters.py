@@ -370,10 +370,10 @@ class AnonymizationFilter(Filter):
 
         # Replace from right to left so character offsets remain valid
         chars = list(text)
-        ordered_Asc = sorted(entities, key=lambda e: (e.start, e.end))
+        ordered_asc = sorted(entities, key=lambda e: (e.start, e.end))
         entity_replacements: list[tuple[DetectedEntity, AnonymizationResult]] = []
 
-        for entity in ordered_Asc:
+        for entity in ordered_asc:
             idx = counters.get(entity.entity_type, 0) + 1
             counters[entity.entity_type] = idx
             strategy = self._strategy_selector.select(entity, sec_context)
