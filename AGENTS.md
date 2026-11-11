@@ -42,7 +42,7 @@ pip-audit
 
 ```text
 src/
-├── domain/          # Immutable Pydantic v2 models (DetectedEntity, ToolCall, DocumentAttachment, DataClass, AuditEvent), exceptions (HardStopError, ResidencyViolationError, UnsupportedMediaWithPotentialPIIError), and protocols (AuditWriter, ResidencyPolicyEngine, LocalOCREngine)
+├── domain/          # Immutable Pydantic v2 models (DetectedEntity, ToolCall, DocumentAttachment, DataClass, AuditEvent, TokenRecord, KeyStatus, RotationStrategy), exceptions (HardStopError, ResidencyViolationError, UnsupportedMediaWithPotentialPIIError), and protocols (AuditWriter, ResidencyPolicyEngine, LocalOCREngine, TokenizationVault, KMS)
 ├── pipeline/        # Pipes & Filters core + PipelineBuilder + PipelineProxy
 │   ├── context.py   # Immutable PipelineContext (Memento Originator) & FilterRecord execution metadata
 │   ├── filter.py    # Filter interface, Pipe interface, and its immutable Pipeline implementation (Inbound Pipeline)
@@ -52,12 +52,14 @@ src/
 ├── detectors/       # Strategy pattern for PII/PHI detection (PIIDetector interface + RegexPIIDetector, NERPIIDetector, PolishTransformerNERDetector, EnglishTransformerNERDetector, HeuristicPIIDetector, ContextRuleEnhancer)
 ├── strategies/      # Strategy pattern for anonymization (AnonymizationStrategy interface + StrategySelector, TokenizationStrategy, MaskingStrategy, GeneralizationStrategy, SynthesisStrategy)
 ├── vault/           # Protection Proxy + AES-256-GCM VaultCore + KMS
-│   ├── vault.py     # Internal VaultCore & TokenRecord (package-private; NEVER accessed directly by callers)
-│   ├── proxy.py     # VaultProxy enforcing AuthN/AuthZ and writing immutable audit events via AuditWriter
-│   └── keys.py      # KMS with key_id versioning, KeyRotation scheduling, and TTL expiration
+│   ├── vault.py     # Internal VaultCore storing encrypted TokenRecords (package-private; NEVER accessed directly by callers)
+│   ├── proxy.py     # VaultProxy enforcing AuthN/AuthZ (AccessControlPolicy, rate limiting) and writing immutable audit events via AuditWriter
+│   ├── keys.py      # InMemoryKMS implementing KMS (MK → KEK → DEK hierarchy) with key_id versioning, KeyRotation scheduling, and TTL expiration
+│   └── audit.py     # AuditLog (hash-chained, append-only AuditWriter implementation) & Alerting (SIEM integration protocol)
 ├── state/           # Memento pattern for safe request-scoped context restoration
 │   └── memento.py   # PipelineMemento & ResponseRestorer
 └── dispatchers/     # Abstract LLMDispatcher interface and provider adapters
+    └── residency.py # DeclarativeResidencyPolicyEngine evaluating ResidencyRule entries into a ResidencyDecision
 ```
 
 ---

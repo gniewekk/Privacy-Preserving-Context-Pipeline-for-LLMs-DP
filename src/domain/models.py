@@ -70,6 +70,23 @@ class Permission(StrEnum):
     AUDIT_READ = "AUDIT_READ"
 
 
+class KeyStatus(StrEnum):
+    """Lifecycle status of a versioned KMS key (ARCHITECTURE.md §5.5)."""
+
+    ACTIVE = "ACTIVE"
+    DEPRECATED = "DEPRECATED"
+    EXPIRED = "EXPIRED"
+    REVOKED = "REVOKED"
+
+
+class RotationStrategy(StrEnum):
+    """Handling of TokenRecords encrypted under a rotated key (ARCHITECTURE.md §5.5)."""
+
+    RE_ENCRYPT = "RE_ENCRYPT"
+    RETAIN_OLD_KEY = "RETAIN_OLD_KEY"
+    EXPIRE = "EXPIRE"
+
+
 class AuditAction(StrEnum):
     """Auditable security actions across the pipeline and vault."""
 
@@ -139,6 +156,7 @@ class SecurityContext(BaseModel):
 
     request_id: str
     tenant_id: str
+    session_id: str | None = None
     data_class: DataClass = DataClass.GENERAL
     jurisdiction: str = "EU"
 
@@ -207,7 +225,29 @@ class EndpointMetadata(BaseModel):
     provider_id: str
     region: str
     is_eu_compliant: bool
+    data_processing_agreement: bool = False
     certifications: frozenset[str] = frozenset()
+
+
+class TokenRecord(BaseModel):
+    """Encrypted vault entry binding a token to its AES-256-GCM ciphertext (ARCHITECTURE.md §3.4).
+
+    `tenant_id`, `request_id` and `entity_type` form the AAD, so altering them breaks decryption.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token_id: str
+    encrypted_value: bytes = Field(repr=False)
+    nonce: bytes = Field(repr=False, min_length=12, max_length=12)
+    key_id: str
+    entity_type: EntityType
+    data_class: DataClass = DataClass.GENERAL
+    tenant_id: str
+    request_id: str
+    session_id: str | None = None
+    created_at: datetime
+    expires_at: datetime | None = None
 
 
 class AuditEvent(BaseModel):
@@ -222,6 +262,9 @@ class AuditEvent(BaseModel):
     principal_id: str
     tenant_id: str
     request_id: str
+    session_id: str | None = None
     token_id: str | None = None
     entity_type: EntityType | None = None
     reason: str | None = None
+    previous_hash: str | None = None
+    event_hash: str | None = None
