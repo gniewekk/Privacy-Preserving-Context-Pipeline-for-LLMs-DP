@@ -456,6 +456,18 @@ flowchart TD
 | `PipelineBuilder` | Tworzy i waliduje konfigurację pipeline'u | Builder |
 | `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
 
+**Rozmieszczenie komponentów Vault, KMS, audytu i residency w kodzie:**
+
+| Moduł | Komponenty |
+|-------|-----------|
+| `src/domain/protocols.py` | Interfejsy `TokenizationVault`, `KMS`, `AuditWriter`, `ResidencyPolicyEngine` |
+| `src/domain/models.py` | `TokenRecord`, `KeyStatus`, `RotationStrategy` |
+| `src/vault/vault.py` | `VaultCore` (dostępny wyłącznie przez `VaultProxy`) |
+| `src/vault/proxy.py` | `VaultProxy`, `AccessControlPolicy` (RBAC/ABAC, rate limiting) |
+| `src/vault/keys.py` | `InMemoryKMS` (implementacja `KMS`, hierarchia MK → KEK → DEK), `KeyRotation` |
+| `src/vault/audit.py` | `AuditLog` (implementacja `AuditWriter` z łańcuchem hashy), `Alerting` (integracja SIEM) |
+| `src/dispatchers/residency.py` | `DeclarativeResidencyPolicyEngine`, `ResidencyRule`, `ResidencyDecision` |
+
 `PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`:
 - Dla obiektu `ToolCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
 - Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `UnsupportedMediaWithPotentialPIIError` (`HardStopError`).
@@ -839,6 +851,8 @@ Wartości PII w TokenDB
 ```
 ResidencyDecision = f(DataClass, EndpointMetadata.region, OrganizationPolicy)
 ```
+
+`ResidencyDecision` przyjmuje wartości `ALLOW`, `WARN` i `BLOCK`. `DeclarativeResidencyPolicyEngine` wyznacza ją na podstawie listy `ResidencyRule` (klasa danych → dozwolone wzorce regionów, np. `eu-*`), wczytywanej z konfiguracji w formacie z §5.3. Region nieobjęty żadną regułą daje `BLOCK` (deny-by-default).
 
 **Macierz decyzji:**
 

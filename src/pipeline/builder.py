@@ -9,7 +9,12 @@ from detectors.base import PIIDetector
 from detectors.heuristic import ContextRuleEnhancer
 from domain.exceptions import PipelineConfigurationError
 from domain.models import AuditLevel, DataClass, EntityType, PDFExtractionPolicy
-from domain.protocols import AuditWriter, LocalOCREngine, ResidencyPolicyEngine
+from domain.protocols import (
+    AuditWriter,
+    LocalOCREngine,
+    ResidencyPolicyEngine,
+    TokenizationVault,
+)
 from pipeline.filter import Filter, Pipeline
 from pipeline.filters import (
     AnonymizationFilter,
@@ -39,7 +44,7 @@ class PipelineBuilder:
             reversible=False
         )
         self._residency_policy: ResidencyPolicyEngine | None = None
-        self._vault_proxy: Any | None = None
+        self._vault_proxy: TokenizationVault | None = None
         self._response_restorer: Any | None = None
         self._k_anonymity_threshold: int | None = None
         self._re_id_risk_threshold: float | None = None
@@ -95,7 +100,7 @@ class PipelineBuilder:
         self._residency_policy = policy
         return self
 
-    def with_vault_proxy(self, vault_proxy: Any) -> Self:
+    def with_vault_proxy(self, vault_proxy: TokenizationVault) -> Self:
         """Bind a VaultProxy reference for reversible tokenization strategies."""
         self._vault_proxy = vault_proxy
         return self

@@ -27,7 +27,7 @@ classDiagram
         <<interface>>
         +tokenize(plaintext: str, entity_type: EntityType, context: SecurityContext) TokenRecord
         +de_tokenize(token_id: str, principal: SecurityPrincipal, context: SecurityContext) str
-        +rotate_keys(principal: SecurityPrincipal) str
+        +rotate_keys(principal: SecurityPrincipal, context: SecurityContext, strategy: RotationStrategy) str
     }
     class VaultProxy {
         -_vault: VaultCore

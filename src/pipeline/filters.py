@@ -365,6 +365,7 @@ class AnonymizationFilter(Filter):
         sec_context = SecurityContext(
             request_id=context.request_id,
             tenant_id=context.tenant_id,
+            session_id=context.session_id,
             data_class=context.data_class,
         )
 
