@@ -8,7 +8,7 @@
 
 ## 1. Context & Problem
 
-In agentic LLM workflows (Scenario 5.6 in `ARCHITECTURE.md`), the model does not merely reply with free text—it emits structured `ToolCall` / `FunctionCall` requests (e.g., `get_birth_date(user_id="<PERSON_1>")`) to query internal databases or APIs.
+In agentic LLM workflows (Scenario 5.6 in `ARCHITECTURE.md`), the model does not merely reply with free text—it emits structured `ToolCall` requests (e.g., `get_birth_date(user_id="<PERSON_1>")`) to query internal databases or APIs.
 
 This introduces two architectural challenges:
 1. **Zero Plaintext Exposure to the LLM:** The LLM only knows the pseudonym `<PERSON_1>`, whereas the internal database requires the real identifier (`"Jan Kowalski"`). Conversely, the database response (`"1990-01-01"`) contains new sensitive PII that must never be returned to the LLM in plaintext.
@@ -24,10 +24,10 @@ We introduce **Bi-Directional Tool Call Sanitization** combined with **Versioned
    - Inbound prompts are tokenized as usual (`"Jan Kowalski"` -> `<PERSON_1>`), and the LLM receives only pseudonymized context alongside tool schemas.
    - When the LLM emits a `ToolCall(name=..., arguments={"user_id": "<PERSON_1>"})`, the middleware intercepts the call inside the trusted boundary.
 2. **Scoped Just-In-Time Detokenization for Tool Execution:**
-   - `ToolExecutionMiddleware` requests detokenization of `<PERSON_1>` via `VaultProtectionProxy.detokenize()` using a scoped service principal, executes the database query with the resolved value, and immediately discards the plaintext from memory.
+   - `ToolExecutionMiddleware` requests detokenization of `<PERSON_1>` via `VaultProxy.de_tokenize()` using a scoped service principal, executes the database query with the resolved value, and immediately discards the plaintext from memory.
 3. **Outbound Tool Result Tokenization & Memento Evolution:**
-   - The raw tool output (`"1990-01-01"`) is passed through `DetectionFilter` and `AnonymizationFilter`, producing `<DATE_1>` and storing its ciphertext in `TokenVault`.
-   - `SessionOriginator` creates a new evolved `AnonymizationMemento` snapshot (incrementing `version` and appending `<DATE_1> -> tok_id` to the encapsulated mapping) and updates `Caretaker` for the active `request_id`.
+   - The raw tool output (`"1990-01-01"`) is passed through `PIIDetectorFilter` and `AnonymizationFilter`, producing `<DATE_1>` and storing its ciphertext in `VaultCore`.
+   - `PipelineContext` creates a new evolved `PipelineMemento` snapshot (incrementing `version` and appending `<DATE_1> -> tok_id` to the encapsulated mapping) and updates `ResponseRestorer` for the active `request_id`.
    - Only the sanitized tool result (`{"birth_date": "<DATE_1>"}`) is returned to the LLM.
 
 ---
@@ -48,7 +48,7 @@ Creating an isolated Memento for the tool call that overwrites the initial promp
 
 ### Positive
 - **End-to-End Zero Trust for Agentic Loops:** The external LLM orchestrates multi-step tool reasoning over pseudonymized symbols (`<PERSON_1>`, `<DATE_1>`) without ever observing plaintext PII.
-- **Full Auditability:** Both the intermediate tool-argument detokenization and the final user-response detokenization are independently authorized and logged by `VaultProtectionProxy`.
+- **Full Auditability:** Both the intermediate tool-argument detokenization and the final user-response detokenization are independently authorized and logged by `VaultProxy`.
 
 ### Negative / Mitigations
 - **Additional Round-Trip Latency:** Intercepting tool calls adds a local detokenization + re-tokenization step per tool invocation. *Mitigation:* Local AES-256-GCM vault operations execute in microseconds in-process, negligible compared to LLM network inference latency.
@@ -59,4 +59,4 @@ Creating an isolated Memento for the tool call that overwrites the initial promp
 
 - **Scenario 1 & 2 (Pseudonymization & Authorized Detokenization):** Extends reversible tokenization and RBAC enforcement to structured `ToolCall` payloads.
 - **Scenario 3 (Data Residency):** Prevents sensitive database records fetched during tool calls from leaking to non-compliant external LLM endpoints.
-- **Scenario 6 (Extensibility):** Prepares the architecture for multi-hop agentic sanitization changes without altering core `Filter` or `VaultProtocol` interfaces.
+- **Scenario 6 (Extensibility):** Prepares the architecture for multi-hop agentic sanitization changes without altering core `Filter` or `TokenizationVault` interfaces.

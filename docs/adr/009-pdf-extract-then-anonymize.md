@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-10
-- **Component:** `src/pipeline/` (`DocumentExtractorFilter`, `InboundPipeline`)
+- **Component:** `src/pipeline/` (`DocumentExtractorFilter`, `Pipeline`)
 
 ---
 
@@ -20,7 +20,7 @@ Enterprise and clinical users frequently attach PDF documents (invoices, dischar
 We enforce an **Extract-Then-Anonymize, Fail-Closed on Raw Binaries** policy via `DocumentExtractorFilter` at the entry of the inbound pipeline:
 
 1. **Zero Raw Binary Egress:** Raw PDF binaries and attachment byte streams are never forwarded to any external `LLMDispatcher`.
-2. **Metadata Stripping & Plaintext Extraction:** `DocumentExtractorFilter` parses the document locally, discards all XMP/Info dictionary metadata, extracts only the textual content layer, and writes the normalized text into `PipelineContext` for standard `DetectionFilter` -> `AnonymizationFilter` processing.
+2. **Metadata Stripping & Plaintext Extraction:** `DocumentExtractorFilter` parses the document locally, discards all XMP/Info dictionary metadata, extracts only the textual content layer, and writes the normalized text into `PipelineContext` for standard `PIIDetectorFilter` -> `AnonymizationFilter` processing.
 3. **Fail-Closed Policy on Scanned PDFs / Embedded Images:**
    - If a PDF lacks a text layer (i.e., a scanned image) or contains embedded raster images while no trusted local OCR engine is configured (`STRICT_NO_OCR` mode), the filter immediately aborts execution by raising a fail-closed domain exception (`UnsupportedMediaWithPotentialPIIError`) and records an immutable `AuditEvent`.
    - Only when a local, network-isolated OCR adapter is explicitly injected (`LOCAL_OCR_ENABLED`) is raster text extracted and routed through the PII detection chain.
@@ -52,5 +52,5 @@ Extracting whatever text exists in a hybrid PDF while silently dropping image wa
 
 ## 5. Compliance with Scenarios
 
-- **Scenario 1 & 3 (Pseudonymization & EU Data Residency for PHI):** Ensures clinical PDF attachments are stripped of metadata, scanned for PHI, and gated by `ResidencyGate` before any external dispatch.
+- **Scenario 1 & 3 (Pseudonymization & EU Data Residency for PHI):** Ensures clinical PDF attachments are stripped of metadata, scanned for PHI, and gated by `ResidencyPolicyFilter` before any external dispatch.
 - **Scenario 6 (Extensibility):** Demonstrates how new input modalities (PDFs, structured documents) can be normalized via an entry `Filter` without changing downstream `PIIDetector` or `AnonymizationStrategy` implementations.

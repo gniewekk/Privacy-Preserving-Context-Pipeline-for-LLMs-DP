@@ -1,3 +1,3 @@
-"""Protection Proxy, AES-256-GCM TokenVault, and KeyManager."""
+"""Protection Proxy (VaultProxy), AES-256-GCM VaultCore, and KMS."""
 
 __all__: list[str] = []

@@ -28,7 +28,7 @@ We adopt the **Pipes & Filters** architectural pattern (`src/pipeline/`) operati
   class Filter(Protocol):
       def process(self, context: PipelineContext) -> PipelineContext: ...
   ```
-- **Stateless Filters:** Concrete filters (`DetectionFilter`, `RiskAssessmentFilter`, `AnonymizationFilter`, `ResidencyGate`, `RestorationFilter`) store only immutable configuration and injected interfaces (`PIIDetector`, `StrategySelector`, `ResidencyPolicy`, `VaultProtocol`). All per-request data travels exclusively inside `PipelineContext`.
+- **Stateless Filters:** Concrete filters (`PIIDetectorFilter`, `RiskAssessmentFilter`, `AnonymizationFilter`, `ResidencyPolicyFilter`, `ResponseRestorer`) store only immutable configuration and injected interfaces (`PIIDetector`, `StrategySelector`, `ResidencyPolicyEngine`, `TokenizationVault`). All per-request data travels exclusively inside `PipelineContext`.
 - **Fail-Closed Short-Circuiting:** Any filter may halt execution immediately by raising a typed domain exception (e.g., `ResidencyViolationError`, `ReIdentificationRiskError`), preventing downstream dispatch to the external LLM and triggering an immutable audit event.
 - **Zero Concrete Branching:** Filters never inspect concrete detector or strategy class types via `if/elif` or `match/case`.
 
@@ -49,7 +49,7 @@ Publishing prompts and intermediate sanitization states as asynchronous events a
 ## 4. Trade-offs & Consequences
 
 ### Positive
-- **Deterministic Ordering & Fail-Closed Security:** A `ResidencyGate` filter is guaranteed to run before `LLMDispatcher`, ensuring zero network egress on policy violation.
+- **Deterministic Ordering & Fail-Closed Security:** A `ResidencyPolicyFilter` filter is guaranteed to run before `LLMDispatcher`, ensuring zero network egress on policy violation.
 - **Concurrency Safety:** Because filters are stateless and `PipelineContext` is frozen, a single built `Pipeline` instance can safely process thousands of concurrent requests without race conditions or state bleed between tenants.
 - **Isolated Unit Testing:** Each filter can be unit-tested in complete isolation by passing a synthetic `PipelineContext` and asserting on the returned context or raised exception.
 
@@ -60,7 +60,7 @@ Publishing prompts and intermediate sanitization states as asynchronous events a
 
 ## 5. Compliance with Scenarios
 
-- **Scenario 1 (Pseudonymization Happy Path):** Inbound `DetectionFilter` -> `AnonymizationFilter` replaces PII with `<PERSON_1>` tokens; outbound `RestorationFilter` restores values for authorized callers.
-- **Scenario 3 (EU Data Residency Block for PHI):** `ResidencyGate` inspects `context.detected_entities` for `PHI` tags and compares against `context.target_endpoint.region`, raising `ResidencyViolationError` before any network call occurs.
-- **Scenario 4 (Re-identification Risk / $k$-Anonymity):** `RiskAssessmentFilter` evaluates quasi-identifier combinations in `PipelineContext` and invokes generalization or halts execution if $k < k_{\text{target}}$.
+- **Scenario 1 (Pseudonymization Happy Path):** Inbound `PIIDetectorFilter` -> `AnonymizationFilter` replaces PII with `<PERSON_1>` tokens; outbound `ResponseRestorer` restores values for authorized callers.
+- **Scenario 3 (EU Data Residency Block for PHI):** `ResidencyPolicyFilter` inspects `context.detected_entities` for `PHI` tags and compares against `context.target_endpoint.region`, raising `ResidencyViolationError` before any network call occurs.
+- **Scenario 4 (Re-identification Risk / $k$-Anonymity):** `RiskAssessmentFilter` evaluates quasi-identifier combinations in `PipelineContext` and invokes generalization or halts execution if $k < k_{\text{min}}$.
 - **Scenario 6 (Extensibility):** New filters can be inserted into the pipe without modifying any existing filter implementation.
