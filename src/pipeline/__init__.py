@@ -11,6 +11,7 @@ from pipeline.filters import (
     PIIDetectorFilter,
     ResidencyPolicyFilter,
 )
+from pipeline.language import StatisticalLanguageDetector
 from pipeline.proxy import PipelineProxy
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "Filter",
     "FilterRecord",
     "LanguageDetectorFilter",
+    "StatisticalLanguageDetector",
     "PIIDetectorFilter",
     "Pipe",
     "Pipeline",
