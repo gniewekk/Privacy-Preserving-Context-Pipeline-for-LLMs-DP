@@ -1,3 +1,17 @@
-"""Strategy pattern interfaces and implementations for PII/PHI anonymization."""
+"""Strategy pattern interfaces and registry for PII/PHI anonymization."""
 
-__all__: list[str] = []
+from strategies.base import (
+    AnonymizationStrategy,
+    MaskingStrategy,
+    PlaceholderTokenStrategy,
+    StrategyRegistry,
+    register_strategy,
+)
+
+__all__ = [
+    "AnonymizationStrategy",
+    "MaskingStrategy",
+    "PlaceholderTokenStrategy",
+    "StrategyRegistry",
+    "register_strategy",
+]

@@ -1,0 +1,434 @@
+"""Stateless filters for the Inbound Pipes & Filters pipeline (Osoba A)."""
+
+from __future__ import annotations
+
+import re
+import uuid
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
+
+from detectors.base import PIIDetector, resolve_overlapping_spans
+from domain.exceptions import (
+    ResidencyViolationError,
+    UnsupportedMediaWithPotentialPIIError,
+)
+from domain.models import (
+    AnonymizationRequest,
+    AnonymizationResult,
+    AuditAction,
+    AuditEvent,
+    AuditLevel,
+    AuditOutcome,
+    DataClass,
+    DetectedEntity,
+    EntityType,
+    PDFExtractionPolicy,
+    SecurityContext,
+)
+from domain.protocols import AuditLogger, LocalOCREngine, ResidencyPolicy
+from pipeline.context import PipelineContext
+from pipeline.filter import Filter
+from strategies.base import StrategyRegistry
+
+# Regex helpers for local, zero-network PDF metadata stripping & text stream extraction
+_PDF_XMP_PATTERN = re.compile(rb"<x:xmpmeta\b.*?</x:xmpmeta>", re.DOTALL | re.IGNORECASE)
+_PDF_INFO_TAG_PATTERN = re.compile(
+    rb"/(?:Author|Creator|Producer|Title|Subject|Keywords)\s*\([^)]*\)",
+    re.IGNORECASE,
+)
+_PDF_IMAGE_SUBTYPE_PATTERN = re.compile(rb"/Subtype\s*/Image\b")
+_PDF_TEXT_BLOCK_PATTERN = re.compile(rb"BT\b(.*?)\bET", re.DOTALL)
+_PDF_LITERAL_STRING_PATTERN = re.compile(rb"\(([^()\\]*(?:\\.[^()\\]*)*)\)")
+
+_POLISH_DIACRITICS = frozenset("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
+_POLISH_MARKERS = frozenset(
+    {
+        "jest",
+        "oraz",
+        "który",
+        "która",
+        "pacjent",
+        "klient",
+        "faktura",
+        "mieszka",
+        "zamieszkały",
+        "urodzony",
+        "skarży",
+        "się",
+        "przy",
+        "ulicy",
+    }
+)
+
+
+def _extract_clean_pdf_text(raw_pdf_bytes: bytes) -> tuple[str, bool]:
+    """Strip XMP/Info metadata from PDF bytes and extract text layer and image flag."""
+    if not raw_pdf_bytes.startswith(b"%PDF-"):
+        raise UnsupportedMediaWithPotentialPIIError(
+            "Invalid or unsupported binary document header; expected PDF attachment."
+        )
+
+    has_embedded_image = bool(_PDF_IMAGE_SUBTYPE_PATTERN.search(raw_pdf_bytes))
+
+    # Strip XMP metadata streams and /Info dictionary tags before text extraction
+    scrubbed = _PDF_XMP_PATTERN.sub(b"", raw_pdf_bytes)
+    scrubbed = _PDF_INFO_TAG_PATTERN.sub(b"", scrubbed)
+
+    extracted_fragments: list[str] = []
+    for bt_match in _PDF_TEXT_BLOCK_PATTERN.finditer(scrubbed):
+        block = bt_match.group(1)
+        for str_match in _PDF_LITERAL_STRING_PATTERN.finditer(block):
+            raw_fragment = str_match.group(1)
+            decoded = (
+                raw_fragment.replace(rb"\(", b"(")
+                .replace(rb"\)", b")")
+                .replace(rb"\\", b"\\")
+                .decode("utf-8", errors="ignore")
+                .strip()
+            )
+            if decoded:
+                extracted_fragments.append(decoded)
+
+    return " ".join(extracted_fragments).strip(), has_embedded_image
+
+
+class DocumentExtractorFilter(Filter):
+    """Extracts text from PDF attachments, strips XMP/Info metadata, and fails closed on scans."""
+
+    def __init__(
+        self,
+        policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR,
+        ocr_engine: LocalOCREngine | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        self._policy = policy
+        self._ocr_engine = ocr_engine
+        self._audit_logger = audit_logger
+
+    @property
+    def filter_name(self) -> str:
+        return "DocumentExtractorFilter"
+
+    def _record_block_audit(self, context: PipelineContext, reason: str) -> None:
+        if self._audit_logger is None:
+            return
+        self._audit_logger.record(
+            AuditEvent(
+                event_id=f"evt_{uuid.uuid4().hex[:12]}",
+                timestamp=datetime.now(UTC),
+                action=AuditAction.DOCUMENT_EXTRACTION,
+                outcome=AuditOutcome.BLOCKED,
+                principal_id=(
+                    context.principal.principal_id if context.principal else "anonymous"
+                ),
+                tenant_id=context.tenant_id,
+                request_id=context.request_id,
+                reason=reason,
+            )
+        )
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        if not context.attachments:
+            return context
+
+        extracted_texts: list[str] = []
+        if context.raw_text.strip():
+            extracted_texts.append(context.raw_text.strip())
+
+        for attachment in context.attachments:
+            text_layer, has_image = _extract_clean_pdf_text(attachment.content_bytes)
+            needs_ocr = has_image or not text_layer
+
+            if needs_ocr:
+                if (
+                    self._policy == PDFExtractionPolicy.LOCAL_OCR_ENABLED
+                    and self._ocr_engine is not None
+                ):
+                    ocr_text = self._ocr_engine.extract_text_from_pdf_bytes(
+                        attachment.content_bytes
+                    ).strip()
+                    if not ocr_text and not text_layer:
+                        self._record_block_audit(
+                            context, "Scanned PDF yielded empty text after local OCR."
+                        )
+                        raise UnsupportedMediaWithPotentialPIIError(
+                            "Scanned PDF yielded no extractable text; blocked fail-closed."
+                        )
+                    combined = " ".join(part for part in (text_layer, ocr_text) if part)
+                    extracted_texts.append(combined)
+                else:
+                    self._record_block_audit(
+                        context,
+                        "UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII: scanned PDF in STRICT_NO_OCR mode.",
+                    )
+                    raise UnsupportedMediaWithPotentialPIIError(
+                        "UNSUPPORTED_MEDIA_WITH_POTENTIAL_PII: PDF contains scanned/raster "
+                        "imagery or lacks a text layer while STRICT_NO_OCR is active."
+                    )
+            else:
+                extracted_texts.append(text_layer)
+
+        merged_text = "\n".join(extracted_texts)
+        # Clear binary attachments so raw binaries never leave the boundary (ADR-009)
+        return context.model_copy(
+            update={
+                "raw_text": merged_text,
+                "attachments": (),
+            }
+        )
+
+
+class LanguageDetectorFilter(Filter):
+    """Detects prompt language ('pl' vs 'en') before PII detection."""
+
+    @property
+    def filter_name(self) -> str:
+        return "LanguageDetectorFilter"
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        text = context.current_text
+        if not text.strip():
+            return context
+
+        has_pl_diacritics = any(ch in _POLISH_DIACRITICS for ch in text)
+        words = {w.strip(".,!?;:()[]{}\"'").lower() for w in text.split()}
+        has_pl_markers = bool(words & _POLISH_MARKERS)
+
+        detected_lang = "pl" if (has_pl_diacritics or has_pl_markers) else "en"
+        return context.model_copy(update={"language": detected_lang})
+
+
+class DetectionFilter(Filter):
+    """Stateless filter orchestrating registered PIIDetector strategies without branching."""
+
+    def __init__(self, detectors: Sequence[PIIDetector]) -> None:
+        self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
+
+    @property
+    def filter_name(self) -> str:
+        return "DetectionFilter"
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        text = context.current_text
+        all_detected: list[DetectedEntity] = []
+        for detector in self._detectors:
+            all_detected.extend(detector.detect(text, language=context.language))
+
+        merged = resolve_overlapping_spans(all_detected)
+        elevated_class = context.data_class
+        if any(e.data_class == DataClass.PHI for e in merged):
+            elevated_class = DataClass.PHI
+
+        return context.model_copy(
+            update={
+                "detected_entities": merged,
+                "data_class": elevated_class,
+            }
+        )
+
+
+class AnonymizationFilter(Filter):
+    """Stateless filter delegating PII transformation to StrategyRegistry."""
+
+    def __init__(
+        self,
+        strategy_registry: StrategyRegistry,
+        detectors: Sequence[PIIDetector] = (),
+    ) -> None:
+        self._strategy_registry = strategy_registry
+        self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
+
+    @property
+    def filter_name(self) -> str:
+        return "AnonymizationFilter"
+
+    def _anonymize_string(
+        self,
+        text: str,
+        entities: Sequence[DetectedEntity],
+        context: PipelineContext,
+        counters: dict[EntityType, int],
+        placeholder_map: dict[str, str],
+        results_acc: list[AnonymizationResult],
+    ) -> str:
+        if not entities:
+            return text
+
+        sec_context = SecurityContext(
+            request_id=context.request_id,
+            tenant_id=context.tenant_id,
+            data_class=context.data_class,
+        )
+
+        # Replace from right to left so character offsets remain valid
+        chars = list(text)
+        ordered_Asc = sorted(entities, key=lambda e: (e.start, e.end))
+        entity_replacements: list[tuple[DetectedEntity, AnonymizationResult]] = []
+
+        for entity in ordered_Asc:
+            idx = counters.get(entity.entity_type, 0) + 1
+            counters[entity.entity_type] = idx
+            strategy = self._strategy_registry.resolve(entity.entity_type)
+            req = AnonymizationRequest(
+                request_id=context.request_id,
+                tenant_id=context.tenant_id,
+                principal=context.principal,
+                context=sec_context,
+                entity_index=idx,
+            )
+            res = strategy.anonymize(entity, req)
+            results_acc.append(res)
+            if res.token_id is not None:
+                placeholder_map[res.replacement_text] = res.token_id
+            entity_replacements.append((entity, res))
+
+        for entity, res in reversed(entity_replacements):
+            chars[entity.start : entity.end] = list(res.replacement_text)
+
+        return "".join(chars)
+
+    def _sanitize_json_value(
+        self,
+        value: Any,
+        context: PipelineContext,
+        counters: dict[EntityType, int],
+        placeholder_map: dict[str, str],
+        results_acc: list[AnonymizationResult],
+    ) -> Any:
+        if isinstance(value, str):
+            detected: list[DetectedEntity] = []
+            for detector in self._detectors:
+                detected.extend(detector.detect(value, language=context.language))
+            merged = resolve_overlapping_spans(detected)
+            return self._anonymize_string(
+                value, merged, context, counters, placeholder_map, results_acc
+            )
+        if isinstance(value, dict):
+            return {
+                str(k): self._sanitize_json_value(
+                    v, context, counters, placeholder_map, results_acc
+                )
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                self._sanitize_json_value(
+                    item, context, counters, placeholder_map, results_acc
+                )
+                for item in value
+            ]
+        return value
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        counters: dict[EntityType, int] = {}
+        placeholder_map: dict[str, str] = dict(context.placeholder_map)
+        results_acc: list[AnonymizationResult] = list(context.anonymization_results)
+
+        sanitized_text = self._anonymize_string(
+            context.current_text,
+            context.detected_entities,
+            context,
+            counters,
+            placeholder_map,
+            results_acc,
+        )
+
+        sanitized_tool_call = context.tool_call
+        if context.tool_call is not None:
+            sanitized_args = self._sanitize_json_value(
+                context.tool_call.arguments,
+                context,
+                counters,
+                placeholder_map,
+                results_acc,
+            )
+            sanitized_tool_call = context.tool_call.model_copy(
+                update={"arguments": sanitized_args}
+            )
+
+        return context.model_copy(
+            update={
+                "sanitized_text": sanitized_text,
+                "anonymization_results": tuple(results_acc),
+                "placeholder_map": placeholder_map,
+                "tool_call": sanitized_tool_call,
+            }
+        )
+
+
+class ResidencyGate(Filter):
+    """Enforces regulatory data residency via injected ResidencyPolicy without hardcoded regions."""
+
+    def __init__(
+        self,
+        policy: ResidencyPolicy,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        self._policy = policy
+        self._audit_logger = audit_logger
+
+    @property
+    def filter_name(self) -> str:
+        return "ResidencyGate"
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        if context.target_endpoint is None:
+            return context
+
+        allowed = self._policy.is_allowed(context.data_class, context.target_endpoint)
+        if not allowed:
+            if self._audit_logger is not None:
+                self._audit_logger.record(
+                    AuditEvent(
+                        event_id=f"evt_{uuid.uuid4().hex[:12]}",
+                        timestamp=datetime.now(UTC),
+                        action=AuditAction.RESIDENCY_CHECK,
+                        outcome=AuditOutcome.BLOCKED,
+                        principal_id=(
+                            context.principal.principal_id
+                            if context.principal
+                            else "anonymous"
+                        ),
+                        tenant_id=context.tenant_id,
+                        request_id=context.request_id,
+                        reason=(
+                            f"Target endpoint region {context.target_endpoint.region!r} "
+                            f"violates residency policy for {context.data_class.value!r}."
+                        ),
+                    )
+                )
+            raise ResidencyViolationError(
+                f"Disallowed target endpoint region {context.target_endpoint.region!r} "
+                f"for data class {context.data_class.value!r}."
+            )
+        return context
+
+
+class AuditContextFilter(Filter):
+    """Records inbound pipeline completion metadata without logging raw PII."""
+
+    def __init__(self, audit_logger: AuditLogger | None = None) -> None:
+        self._audit_logger = audit_logger
+
+    @property
+    def filter_name(self) -> str:
+        return "AuditContextFilter"
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        if self._audit_logger is not None and context.audit_level != AuditLevel.NONE:
+            self._audit_logger.record(
+                AuditEvent(
+                    event_id=f"evt_{uuid.uuid4().hex[:12]}",
+                    timestamp=datetime.now(UTC),
+                    action=AuditAction.PIPELINE_EXECUTION,
+                    outcome=AuditOutcome.COMPLETED,
+                    principal_id=(
+                        context.principal.principal_id if context.principal else "anonymous"
+                    ),
+                    tenant_id=context.tenant_id,
+                    request_id=context.request_id,
+                    reason=f"Anonymized {len(context.detected_entities)} entities.",
+                )
+            )
+        return context
