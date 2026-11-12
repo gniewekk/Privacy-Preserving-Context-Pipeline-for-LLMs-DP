@@ -186,18 +186,35 @@ class PipelineBuilder:
                 "DataClass.MEDICAL."
             )
 
-        strategy_selector = StrategySelector(
+        # Invariant 4: Reversible strategies require VaultProxy and ResponseRestorer
+        temp_selector = StrategySelector(
             strategies=self._strategies,
             default_strategy=self._default_strategy,
         )
-
-        # Invariant 4: Reversible strategies require VaultProxy and ResponseRestorer
-        if strategy_selector.has_reversible_strategy() and (
+        if temp_selector.has_reversible_strategy() and (
             self._vault_proxy is None or self._response_restorer is None
         ):
             raise PipelineConfigurationError(
                 "Reversible tokenization strategy requires `vault_proxy` and `response_restorer`."
             )
+
+        bound_default = self._default_strategy
+        bound_strategies = dict(self._strategies)
+        if self._vault_proxy is not None:
+            if hasattr(bound_default, "with_vault") and bound_default.can_reverse():
+                bound_default = bound_default.with_vault(self._vault_proxy)
+            for ent_type, strat in list(bound_strategies.items()):
+                if hasattr(strat, "with_vault") and strat.can_reverse():
+                    bound_strategies[ent_type] = strat.with_vault(self._vault_proxy)
+            if self._response_restorer is not None and hasattr(
+                self._response_restorer, "bind_vault"
+            ):
+                self._response_restorer.bind_vault(self._vault_proxy)
+
+        strategy_selector = StrategySelector(
+            strategies=bound_strategies,
+            default_strategy=bound_default,
+        )
 
         # Assemble filters in canonical deterministic security order (ARCHITECTURE.md §3.1):
         # DocumentExtractorFilter -> LanguageDetectorFilter -> PIIDetectorFilter ->
@@ -233,6 +250,11 @@ class PipelineBuilder:
             )
 
         stages.extend(self._custom_filters)
-        stages.append(AuditContextFilter(audit_writer=self._audit_writer))
+        stages.append(
+            AuditContextFilter(
+                audit_writer=self._audit_writer,
+                response_restorer=self._response_restorer,
+            )
+        )
 
         return Pipeline(filters=stages)
