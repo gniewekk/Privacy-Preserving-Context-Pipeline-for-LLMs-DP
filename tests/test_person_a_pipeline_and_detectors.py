@@ -841,3 +841,31 @@ def test_architecture_md_canonical_naming_without_aliases() -> None:
     ctx = PipelineProxy(built_pipe).process_text("PESEL 44051401458")
     assert ctx.re_id_risk_threshold == 0.05
     assert "***********" in ctx.sanitized_text
+
+
+def test_polish_compact_and_formatted_phone_detection() -> None:
+    """Verify RegexPIIDetector detects 9-digit compact/grouped PL phones alongside REGON/ABA."""
+    detector = RegexPIIDetector()
+
+    compact_pl = detector.detect(
+        "rozmawialem z janem kowalskim, zadzwonilem pod numer 534595825 i nie odebral nikt",
+        language="pl",
+    )
+    assert [(e.entity_type, e.raw_value) for e in compact_pl] == [
+        (EntityType.PHONE, "534595825")
+    ]
+
+    variants = detector.detect(
+        "Numery: +48534595825, +48 534 595 825, 12 345 67 89 oraz REGON 123456785",
+        language="pl",
+    )
+    variant_pairs = {(e.entity_type, e.raw_value) for e in variants}
+    assert (EntityType.PHONE, "+48534595825") in variant_pairs
+    assert (EntityType.PHONE, "+48 534 595 825") in variant_pairs
+    assert (EntityType.PHONE, "12 345 67 89") in variant_pairs
+    assert (EntityType.REGON, "123456785") in variant_pairs
+
+    us_aba = detector.detect("Bank ABA Routing 021000021", language="en")
+    assert [(e.entity_type, e.raw_value) for e in us_aba] == [
+        (EntityType.ABA_ROUTING, "021000021")
+    ]

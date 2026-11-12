@@ -34,7 +34,16 @@ _CREDIT_CARD_PATTERN = re.compile(
 )
 _EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 _PHONE_PATTERN = re.compile(
-    r"(?<!\d)(?:\+\d{1,3}[\s\-]?)?(?:\(\d{2,3}\)[\s\-]?|\d{3}[\s\-])\d{3}[\s\-]\d{3,4}(?!\d)"
+    r"(?<!\d)(?:"
+    r"(?:\+\d{1,3}[\s\-]?)?(?:\(\d{2,3}\)[\s\-]?|\d{3}[\s\-])\d{3}[\s\-]\d{3,4}"
+    r"|(?:\+\d{1,3}[\s\-]?)?(?:\d{2}[\s\-]\d{3}|\d{3}[\s\-]\d{2})[\s\-]\d{2}[\s\-]\d{2}"
+    r"|\+\d{1,3}[\s\-]?\d{9,11}"
+    r")(?!\d)"
+)
+_COMPACT_PL_PHONE_PATTERN = re.compile(r"(?<!\d)(?<!\+)\d{9}(?!\d)")
+_PHONE_CONTEXT_TRIGGER = re.compile(
+    r"\b(?:tel\.?|telefon|phone|mobile|cell|kom\.?|nr\.?|numer|call|zadzwo[nń]|dzwo[nń])\b",
+    re.IGNORECASE,
 )
 
 # Official IRS valid 2-digit EIN Campus Prefixes
@@ -528,7 +537,7 @@ class RegexPIIDetector(PIIDetector):
                 )
             )
 
-        # 10. Phone numbers
+        # 10. Phone numbers (formatted, international +CC, and 9-digit PL / context-triggered)
         for match in _PHONE_PATTERN.finditer(text):
             detected.append(
                 DetectedEntity(
@@ -541,5 +550,21 @@ class RegexPIIDetector(PIIDetector):
                     detector_id=self.detector_id,
                 )
             )
+
+        for match in _COMPACT_PL_PHONE_PATTERN.finditer(text):
+            left_context = text[max(0, match.start() - 32) : match.start()]
+            has_phone_trigger = bool(_PHONE_CONTEXT_TRIGGER.search(left_context))
+            if language.lower() == "pl" or has_phone_trigger:
+                detected.append(
+                    DetectedEntity(
+                        entity_type=EntityType.PHONE,
+                        start=match.start(),
+                        end=match.end(),
+                        raw_value=match.group(0),
+                        confidence=0.96 if has_phone_trigger else 0.85,
+                        data_class=DataClass.GENERAL,
+                        detector_id=self.detector_id,
+                    )
+                )
 
         return resolve_overlapping_spans(detected)
