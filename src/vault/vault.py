@@ -136,6 +136,34 @@ class VaultCore:
         with self._lock:
             return self._records.pop(token_id, None) is not None
 
+    def expired_token_ids(self, now: datetime | None = None) -> tuple[str, ...]:
+        """Return token IDs whose retention TTL (`expires_at`) has elapsed."""
+        effective_now = now if now is not None else self._clock()
+        with self._lock:
+            return tuple(
+                token_id
+                for token_id, record in self._records.items()
+                if record.expires_at is not None and record.expires_at <= effective_now
+            )
+
+    def session_token_ids(self, session_id: str) -> tuple[str, ...]:
+        """Return token IDs bound to `session_id`."""
+        with self._lock:
+            return tuple(
+                token_id
+                for token_id, record in self._records.items()
+                if record.session_id == session_id
+            )
+
+    def request_token_ids(self, request_id: str) -> tuple[str, ...]:
+        """Return token IDs bound to `request_id`."""
+        with self._lock:
+            return tuple(
+                token_id
+                for token_id, record in self._records.items()
+                if record.request_id == request_id
+            )
+
     def _re_encrypt(self, records: list[TokenRecord]) -> None:
         now = self._clock()
         replacements: dict[str, tuple[TokenRecord, TokenRecord]] = {}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,9 +14,13 @@ from domain.models import (
     DetectedEntity,
     DocumentAttachment,
     EndpointMetadata,
+    EntityType,
     SecurityPrincipal,
     ToolCall,
 )
+
+if TYPE_CHECKING:
+    from state.memento import PipelineMemento
 
 
 class FilterRecord(BaseModel):
@@ -65,6 +69,99 @@ class PipelineContext(BaseModel):
         record = FilterRecord(filter_name=filter_name)
         return self.model_copy(
             update={"applied_filters": (*self.applied_filters, record)}
+        )
+
+    def create_memento(
+        self,
+        *,
+        expires_at: datetime | None = None,
+        key_id: str | None = None,
+        residency_jurisdiction: str = "EU",
+    ) -> PipelineMemento:
+        """Create an encapsulated, tamper-evident PipelineMemento snapshot (ADR-005)."""
+        from state.memento import EntityMetadata, PipelineMemento
+
+        token_map: dict[str, EntityMetadata] = {}
+        inferred_key_id = key_id
+
+        for res in self.anonymization_results:
+            if res.is_reversible and res.token_id is not None:
+                if inferred_key_id is None and res.key_id is not None:
+                    inferred_key_id = res.key_id
+                is_synthetic = not (
+                    res.replacement_text.startswith("<")
+                    and res.replacement_text.endswith(">")
+                )
+                token_map[res.replacement_text] = EntityMetadata(
+                    token_id=res.token_id,
+                    entity_type=res.entity_type,
+                    key_id=res.key_id or inferred_key_id,
+                    is_synthetic=is_synthetic,
+                )
+
+        for placeholder, tok_id in self.placeholder_map.items():
+            if placeholder not in token_map:
+                ent_type = EntityType.CUSTOM
+                if placeholder.startswith("<") and "_" in placeholder:
+                    raw_prefix = placeholder[1 : placeholder.rfind("_")]
+                    if raw_prefix in EntityType.__members__:
+                        ent_type = EntityType[raw_prefix]
+                token_map[placeholder] = EntityMetadata(
+                    token_id=tok_id,
+                    entity_type=ent_type,
+                    key_id=inferred_key_id,
+                    is_synthetic=not (
+                        placeholder.startswith("<") and placeholder.endswith(">")
+                    ),
+                )
+
+        return PipelineMemento.create(
+            request_id=self.request_id,
+            session_id=self.session_id,
+            tenant_id=self.tenant_id,
+            data_class=self.data_class,
+            residency_jurisdiction=residency_jurisdiction,
+            version=1,
+            applied_filters=self.applied_filters,
+            expires_at=expires_at,
+            key_id=inferred_key_id,
+            sanitized_text=self.sanitized_text,
+            token_map=token_map,
+        )
+
+    @classmethod
+    def restore_from_memento(
+        cls,
+        memento: PipelineMemento,
+        *,
+        principal: SecurityPrincipal | None = None,
+        target_endpoint: EndpointMetadata | None = None,
+    ) -> PipelineContext:
+        """Reconstruct a sanitized PipelineContext from a Memento after an LLM timeout (§3.5.B)."""
+        memento.verify_integrity()
+        placeholder_map = {k: v.token_id for k, v in memento.token_map.items()}
+        results = tuple(
+            AnonymizationResult(
+                replacement_text=placeholder,
+                entity_type=meta.entity_type,
+                is_reversible=True,
+                token_id=meta.token_id,
+                key_id=meta.key_id,
+            )
+            for placeholder, meta in memento.token_map.items()
+        )
+        return cls(
+            request_id=memento.request_id,
+            session_id=memento.session_id,
+            tenant_id=memento.tenant_id,
+            raw_text="",
+            sanitized_text=memento.sanitized_text,
+            data_class=memento.data_class,
+            anonymization_results=results,
+            placeholder_map=placeholder_map,
+            applied_filters=memento.applied_filters,
+            principal=principal,
+            target_endpoint=target_endpoint,
         )
 
     @override

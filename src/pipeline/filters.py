@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 import uuid
 import zlib
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from detectors.base import PIIDetector, resolve_overlapping_spans
 from detectors.heuristic import ContextRuleEnhancer
 from domain.exceptions import (
+    HardStopError,
     ResidencyViolationError,
     UnsupportedMediaWithPotentialPIIError,
 )
@@ -27,11 +28,15 @@ from domain.models import (
     EntityType,
     PDFExtractionPolicy,
     SecurityContext,
+    SecurityPrincipal,
 )
 from domain.protocols import AuditWriter, LanguageDetector, LocalOCREngine, ResidencyPolicyEngine
 from pipeline.context import PipelineContext
 from pipeline.filter import Filter
 from strategies.base import StrategySelector
+
+if TYPE_CHECKING:
+    from state.memento import PipelineMemento, ResponseRestorer
 
 # Regex helpers for local, zero-network PDF metadata stripping & text stream extraction
 _PDF_XMP_PATTERN = re.compile(rb"<x:xmpmeta\b.*?</x:xmpmeta>", re.DOTALL | re.IGNORECASE)
@@ -497,16 +502,24 @@ class ResidencyPolicyFilter(Filter):
 
 
 class AuditContextFilter(Filter):
-    """Records inbound pipeline completion metadata without logging raw PII."""
+    """Records inbound pipeline completion metadata and snapshots Memento when configured."""
 
-    def __init__(self, audit_writer: AuditWriter | None = None) -> None:
+    def __init__(
+        self,
+        audit_writer: AuditWriter | None = None,
+        response_restorer: ResponseRestorer | None = None,
+    ) -> None:
         self._audit_writer = audit_writer
+        self._response_restorer = response_restorer
 
     @property
     def filter_name(self) -> str:
         return "AuditContextFilter"
 
     def process(self, context: PipelineContext) -> PipelineContext:
+        if self._response_restorer is not None and hasattr(self._response_restorer, "store"):
+            self._response_restorer.store(context.create_memento())
+
         if self._audit_writer is not None and context.audit_level != AuditLevel.NONE:
             self._audit_writer.record(
                 AuditEvent(
@@ -523,3 +536,397 @@ class AuditContextFilter(Filter):
                 )
             )
         return context
+
+
+MAX_PLACEHOLDER_LENGTH = 64
+_PLACEHOLDER_SPAN_PATTERN = re.compile(r"<[A-Z_]+_[0-9]+>")
+_PLACEHOLDER_PREFIX_PATTERN = re.compile(r"^<[A-Z_0-9]*$")
+
+
+class OutputPIIDetector(Filter):
+    """Scans LLM output for unexpected or hallucinated PII before de-tokenization (§3.1, §5.1).
+
+    Executes before `ResponseRestorer`. Ignores canonical `<ENTITY_N>` placeholders and
+    registered synthetic session replacements while blocking (`HardStopError`) or redacting
+    any newly surfaced PII/PHI so training-data leaks are never enriched with Vault values.
+    """
+
+    def __init__(
+        self,
+        detectors: Sequence[PIIDetector],
+        *,
+        enhancer: ContextRuleEnhancer | None = None,
+        redact_on_leak: bool = False,
+        audit_writer: AuditWriter | None = None,
+        response_restorer: ResponseRestorer | None = None,
+    ) -> None:
+        self._detectors: tuple[PIIDetector, ...] = tuple(detectors)
+        self._enhancer = enhancer or ContextRuleEnhancer()
+        self._redact_on_leak = redact_on_leak
+        self._audit_writer = audit_writer
+        self._response_restorer = response_restorer
+
+    @property
+    def filter_name(self) -> str:
+        return "OutputPIIDetector"
+
+    def _allowed_spans(
+        self,
+        text: str,
+        allowed_replacements: frozenset[str],
+    ) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = [
+            (m.start(), m.end()) for m in _PLACEHOLDER_SPAN_PATTERN.finditer(text)
+        ]
+        for token_str in allowed_replacements:
+            if not token_str:
+                continue
+            start_idx = 0
+            while True:
+                found = text.find(token_str, start_idx)
+                if found == -1:
+                    break
+                spans.append((found, found + len(token_str)))
+                start_idx = found + len(token_str)
+        return spans
+
+    @staticmethod
+    def _overlaps_allowed(entity: DetectedEntity, allowed: Sequence[tuple[int, int]]) -> bool:
+        return any(
+            not (entity.end <= a_start or entity.start >= a_end)
+            for a_start, a_end in allowed
+        )
+
+    def scan(
+        self,
+        response_text: str,
+        *,
+        language: str = "en",
+        context: PipelineContext | None = None,
+        allowed_replacements: frozenset[str] = frozenset(),
+    ) -> str:
+        """Scan `response_text` for leaked PII; raise `HardStopError` or redact on detection."""
+        if not response_text.strip() or not self._detectors:
+            return response_text
+
+        effective_allowed = set(allowed_replacements)
+        if context is not None:
+            effective_allowed.update(context.placeholder_map.keys())
+            if self._response_restorer is not None:
+                memento = self._response_restorer.get(context.request_id)
+                if memento is None and context.session_id is not None:
+                    memento = self._response_restorer.get_by_session(context.session_id)
+                if memento is not None:
+                    effective_allowed.update(memento.token_map.keys())
+
+        raw_detected: list[DetectedEntity] = []
+        for detector in self._detectors:
+            raw_detected.extend(detector.detect(response_text, language=language))
+        enhanced = self._enhancer.enhance(response_text, raw_detected) if raw_detected else ()
+        merged = resolve_overlapping_spans(enhanced)
+
+        allowed_ranges = self._allowed_spans(response_text, frozenset(effective_allowed))
+        leaked_entities = [
+            e for e in merged if not self._overlaps_allowed(e, allowed_ranges)
+        ]
+        if not leaked_entities:
+            return response_text
+
+        principal_id = (
+            context.principal.principal_id
+            if context is not None and context.principal is not None
+            else "anonymous"
+        )
+        tenant_id = context.tenant_id if context is not None else "default"
+        request_id = context.request_id if context is not None else "req_output_scan"
+        session_id = context.session_id if context is not None else None
+        detected_types = ", ".join(sorted({e.entity_type.value for e in leaked_entities}))
+
+        if not self._redact_on_leak:
+            if self._audit_writer is not None:
+                self._audit_writer.record(
+                    AuditEvent(
+                        event_id=f"evt_{uuid.uuid4().hex[:12]}",
+                        timestamp=datetime.now(UTC),
+                        action=AuditAction.OUTPUT_PII_SCAN,
+                        outcome=AuditOutcome.BLOCKED,
+                        principal_id=principal_id,
+                        tenant_id=tenant_id,
+                        request_id=request_id,
+                        session_id=session_id,
+                        reason=(
+                            f"OutputPIIDetector blocked {len(leaked_entities)} unexpected "
+                            f"PII entities ({detected_types}) in LLM response."
+                        ),
+                    )
+                )
+            raise HardStopError(
+                f"OutputPIIDetector blocked {len(leaked_entities)} unexpected PII entities "
+                f"({detected_types}) in LLM output before de-tokenization."
+            )
+
+        chars = list(response_text)
+        for entity in reversed(sorted(leaked_entities, key=lambda e: (e.start, e.end))):
+            chars[entity.start : entity.end] = list(f"[REDACTED_{entity.entity_type.value}]")
+
+        if self._audit_writer is not None:
+            self._audit_writer.record(
+                AuditEvent(
+                    event_id=f"evt_{uuid.uuid4().hex[:12]}",
+                    timestamp=datetime.now(UTC),
+                    action=AuditAction.OUTPUT_PII_SCAN,
+                    outcome=AuditOutcome.COMPLETED,
+                    principal_id=principal_id,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    session_id=session_id,
+                    reason=(
+                        f"OutputPIIDetector redacted {len(leaked_entities)} unexpected "
+                        f"PII entities ({detected_types}) in LLM response."
+                    ),
+                )
+            )
+        return "".join(chars)
+
+    def process(self, context: PipelineContext) -> PipelineContext:
+        """Execute OutputPIIDetector as the first stage of the Outbound Pipeline."""
+        scanned_text = self.scan(
+            context.current_text,
+            language=context.language,
+            context=context,
+        )
+        return context.model_copy(update={"sanitized_text": scanned_text})
+
+
+class StreamingResponseRestorer:
+    """SSE stream processor with bounded `<...>` placeholder window buffering (ADR-006).
+
+    Holds back only candidate `<ENTITY_N>` windows up to `MAX_PLACEHOLDER_LENGTH = 64` bytes
+    so placeholders split across SSE chunks are atomically resolved via `ResponseRestorer`
+    and `VaultProxy.de_tokenize()`, while non-placeholder text is scanned by
+    `OutputPIIDetector` and emitted with minimal latency.
+    """
+
+    def __init__(
+        self,
+        response_restorer: ResponseRestorer,
+        *,
+        output_pii_detector: OutputPIIDetector | None = None,
+        max_placeholder_length: int = MAX_PLACEHOLDER_LENGTH,
+    ) -> None:
+        self._response_restorer = response_restorer
+        self._output_pii_detector = output_pii_detector
+        self._max_placeholder_length = max_placeholder_length
+
+    def _scan_and_restore_segment(
+        self,
+        segment: str,
+        memento: PipelineMemento,
+        principal: SecurityPrincipal | None,
+        context: SecurityContext | None,
+        language: str,
+    ) -> str:
+        if not segment:
+            return ""
+        checked = segment
+        if self._output_pii_detector is not None:
+            checked = self._output_pii_detector.scan(
+                segment,
+                language=language,
+                allowed_replacements=frozenset(memento.token_map.keys()),
+            )
+        return self._response_restorer.restore_response(
+            checked,
+            memento,
+            principal=principal,
+            context=context,
+        )
+
+    def restore_stream(
+        self,
+        chunks: Iterable[str],
+        memento: PipelineMemento | str,
+        *,
+        principal: SecurityPrincipal | None = None,
+        context: SecurityContext | None = None,
+        language: str = "en",
+    ) -> Iterator[str]:
+        """Consume SSE `chunks` and yield de-tokenized output chunks using a 64-byte window."""
+        resolved_memento = (
+            self._response_restorer.get(memento)
+            if isinstance(memento, str)
+            else memento
+        )
+        if resolved_memento is None:
+            raise HardStopError(f"No active PipelineMemento found for stream {memento!r}.")
+        resolved_memento.verify_integrity()
+
+        hold_buffer = ""
+        plain_buffer = ""
+
+        for chunk in chunks:
+            for ch in chunk:
+                if not hold_buffer:
+                    if ch == "<":
+                        if plain_buffer:
+                            yield self._scan_and_restore_segment(
+                                plain_buffer,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            plain_buffer = ""
+                        hold_buffer = "<"
+                    else:
+                        plain_buffer += ch
+                else:
+                    candidate = hold_buffer + ch
+                    if ch == ">":
+                        if _PLACEHOLDER_SPAN_PATTERN.fullmatch(candidate):
+                            yield self._scan_and_restore_segment(
+                                candidate,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            hold_buffer = ""
+                        else:
+                            plain_buffer += candidate
+                            hold_buffer = ""
+                    elif (
+                        len(candidate) <= self._max_placeholder_length
+                        and _PLACEHOLDER_PREFIX_PATTERN.fullmatch(candidate)
+                    ):
+                        hold_buffer = candidate
+                    else:
+                        # Non-placeholder `<` sequence (e.g., `a < b`) or buffer limit reached
+                        if ch == "<":
+                            plain_buffer += hold_buffer
+                            yield self._scan_and_restore_segment(
+                                plain_buffer,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            plain_buffer = ""
+                            hold_buffer = "<"
+                        else:
+                            plain_buffer += candidate
+                            hold_buffer = ""
+
+            if plain_buffer and not hold_buffer:
+                yield self._scan_and_restore_segment(
+                    plain_buffer,
+                    resolved_memento,
+                    principal,
+                    context,
+                    language,
+                )
+                plain_buffer = ""
+
+        tail = plain_buffer + hold_buffer
+        if tail:
+            yield self._scan_and_restore_segment(
+                tail,
+                resolved_memento,
+                principal,
+                context,
+                language,
+            )
+
+    async def restore_stream_async(
+        self,
+        chunks: AsyncIterator[str],
+        memento: PipelineMemento | str,
+        *,
+        principal: SecurityPrincipal | None = None,
+        context: SecurityContext | None = None,
+        language: str = "en",
+    ) -> AsyncIterator[str]:
+        """Asynchronously consume SSE `chunks` and yield de-tokenized output chunks."""
+        resolved_memento = (
+            self._response_restorer.get(memento)
+            if isinstance(memento, str)
+            else memento
+        )
+        if resolved_memento is None:
+            raise HardStopError(f"No active PipelineMemento found for stream {memento!r}.")
+        resolved_memento.verify_integrity()
+
+        hold_buffer = ""
+        plain_buffer = ""
+
+        async for chunk in chunks:
+            for ch in chunk:
+                if not hold_buffer:
+                    if ch == "<":
+                        if plain_buffer:
+                            yield self._scan_and_restore_segment(
+                                plain_buffer,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            plain_buffer = ""
+                        hold_buffer = "<"
+                    else:
+                        plain_buffer += ch
+                else:
+                    candidate = hold_buffer + ch
+                    if ch == ">":
+                        if _PLACEHOLDER_SPAN_PATTERN.fullmatch(candidate):
+                            yield self._scan_and_restore_segment(
+                                candidate,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            hold_buffer = ""
+                        else:
+                            plain_buffer += candidate
+                            hold_buffer = ""
+                    elif (
+                        len(candidate) <= self._max_placeholder_length
+                        and _PLACEHOLDER_PREFIX_PATTERN.fullmatch(candidate)
+                    ):
+                        hold_buffer = candidate
+                    else:
+                        if ch == "<":
+                            plain_buffer += hold_buffer
+                            yield self._scan_and_restore_segment(
+                                plain_buffer,
+                                resolved_memento,
+                                principal,
+                                context,
+                                language,
+                            )
+                            plain_buffer = ""
+                            hold_buffer = "<"
+                        else:
+                            plain_buffer += candidate
+                            hold_buffer = ""
+
+            if plain_buffer and not hold_buffer:
+                yield self._scan_and_restore_segment(
+                    plain_buffer,
+                    resolved_memento,
+                    principal,
+                    context,
+                    language,
+                )
+                plain_buffer = ""
+
+        tail = plain_buffer + hold_buffer
+        if tail:
+            yield self._scan_and_restore_segment(
+                tail,
+                resolved_memento,
+                principal,
+                context,
+                language,
+            )
