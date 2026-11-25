@@ -24,7 +24,7 @@
    - 5.4 [Re-identyfikacja — k-anonimowość z danymi publicznymi (GUS, Eurostat)](#54-re-identyfikacja--k-anonimowość-z-danymi-publicznymi-gus-eurostat)
    - 5.5 [Rotacja kluczy kryptograficznych](#55-rotacja-kluczy-kryptograficznych)
    - 5.6 [Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)](#56-anonymized-agentic-tool-calling-scenariusz-odpytania-bazy-danych)
-   - 5.7 [Wybór providera LLM przez API i obsługa narzędzi deweloperskich](#57-wybór-providera-llm-przez-api-i-obsługa-narzędzi-deweloperskich)
+   - 5.7 [Tryby integracji: „Połącz LLM” i „Połącz Agenta”](#57-tryby-integracji-połącz-llm-i-połącz-agenta)
 6. [Model bezpieczeństwa i przetwarzania danych w Unii Europejskiej](#6-model-bezpieczeństwa-i-przetwarzania-danych-w-unii-europejskiej)
    - 6.1 [Wieloformatowa ekstrakcja dokumentów (Extract-Then-Anonymize)](#61-wieloformatowa-ekstrakcja-dokumentów-extract-then-anonymize)
    - 6.2 [Wykrywanie PII/PHI specyficznych dla Polski i Unii Europejskiej](#62-wykrywanie-piiphi-specyficznych-dla-polski-i-unii-europejskiej)
@@ -50,7 +50,7 @@
 Celem systemu jest stworzenie **bezpiecznej, w pełni konfigurowalnej przez użytkownika warstwy pośredniej (Security & Privacy Middleware)** operującej w reżimie prawnym **Unii Europejskiej (RODO / GDPR, EU AI Act, eIDAS)** między środowiskami klienckimi (aplikacje biznesowe, agenci programistyczni, skrypty, potoki ETL) a zewnętrznymi lub lokalnymi modelami językowymi (LLM), która:
 
 - **przyjmuje ruch na brzegu sieci wyłącznie przez API Gateway**, realizujący uwierzytelnienie (mTLS, JWT), autoryzację (RBAC/ABAC), inspekcję, rate limiting oraz bezpośrednią adaptację protokołów zewnętrznych (eliminując jakiekolwiek zbędne proxy wejściowe),
-- **realizuje elastyczny wybór docelowego providera LLM (Multi-Provider Dispatcher)** — system nie narzuca sztywno żadnego pojedynczego dostawcy modelu; klient w parametrach żądania lub konfiguracji wskazuje, z jakim providerem w EOG chce się komunikować (np. Azure OpenAI EU, Anthropic Claude EU, Mistral AI w Paryżu, czy lokalne instancje vLLM/Ollama on-premise),
+- **realizuje elastyczny wybór docelowego providera LLM (Multi-Provider Dispatcher)** — system nie narzuca sztywno żadnego pojedynczego dostawcy modelu; klient w prostych trybach **`Połącz LLM`** oraz **`Połącz Agenta`** wskazuje, z jakim providerem w EOG chce się komunikować (np. Google Gemini w Vertex AI EOG, ChatGPT / Azure OpenAI EU, Anthropic Claude EOG, Mistral AI w Paryżu, czy lokalne instancje vLLM/Ollama on-premise),
 - **udostępnia uniwersalne interfejsy API (w tym adaptery dla narzędzi deweloperskich)** — transparentnie obsługuje aplikacje webowe, biblioteki OpenAI/Anthropic SDK oraz agentów CLI (takich jak Claude Code) bez modyfikacji ich kodu,
 - **bezwzględnie odrzuca zapytanie w razie wykrycia problemu (Polityka Fail-Closed)** — każde naruszenie reguł rezydencji danych, błąd parsowania nieobsługiwanego formatu, przekroczenie progu ryzyka re-identyfikacji czy błąd integralności skutkuje natychmiastowym przerwaniem potoku z kodem błędu HTTP i rejestracją w audycie (zero wycieku, zero zgadywania),
 - **umożliwia użytkownikom dynamiczną konfigurację filtrów i detektorów w oparciu o Chain of Responsibility budowany przez Builder** — użytkownik decyduje o zestawie aktywnych filtrów, progach i strategiach, a `PipelineBuilder` waliduje nienaruszalność reguł bezpieczeństwa (Privacy by Design),
@@ -104,7 +104,8 @@ flowchart TD
     subgraph DispatcherAndLLM["🤖 Dyspozytor Modeli (Egress Zone)"]
         Dispatcher["🔀 MultiProviderLLMDispatcher\n(Wybór providera w EOG zdefiniowanego w żądaniu)"]
         EgressGW["🚪 EgressGateway (Strict EEA Geo-Fence)"]
-        LLM_Azure["☁️ Azure OpenAI (Region EU)"]
+        LLM_Azure["☁️ ChatGPT / Azure OpenAI (Region EU)"]
+        LLM_Gemini["☁️ Google Gemini (Vertex AI EOG)"]
         LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
         LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
         LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
@@ -143,9 +144,9 @@ flowchart TD
 
     AuditHandler --> Dispatcher
     Dispatcher --> EgressGW
-    EgressGW --> LLM_Azure & LLM_Mistral & LLM_Claude & LLM_Local
+    EgressGW --> LLM_Azure & LLM_Gemini & LLM_Mistral & LLM_Claude & LLM_Local
 
-    LLM_Azure & LLM_Mistral & LLM_Claude & LLM_Local -->|"Odpowiedź / Strumień SSE"| OutChain
+    LLM_Azure & LLM_Gemini & LLM_Mistral & LLM_Claude & LLM_Local -->|"Odpowiedź / Strumień SSE"| OutChain
     OutChain --> OutPII --> WinBuf --> Restorer
     Restorer <-->|"Klastry koreferencji"| MementoMgr
     Restorer <-->|"Autoryzowana de-tokenizacja"| VaultProxy
@@ -170,36 +171,25 @@ flowchart TD
 #### Istota wzorca w systemie
 Wzorzec **Chain of Responsibility (CoR)** jest jedynym wzorcem sterującym przepływem przetwarzania żądania. Każdy krok w potoku jest reprezentowany przez autonomiczny obiekt `FilterHandler`. Ogniwa nie komunikują się przez żadne pośrednie "rury" ani kolejki — przetwarzanie zachodzi synchronicznie w pamięci RAM poprzez przekazywanie niemutowalnego obiektu `PipelineContext`.
 
-Każde ogniwo łańcucha:
-1. **Weryfikuje konfigurację użytkownika:** Sprawdza, czy dane ogniwo zostało włączone w wybranym profilu. Jeśli nie — natychmiast deleguje zadanie do następnika (`return self._pass_to_next(context)`, które wywołuje `self._next_handler.handle(context)`).
-2. **Wykonuje operację domenową:** Wykrywa PII, ekstrahuje dokument, ocenia k-anonimowość lub tokenizuje dane.
-3. **Realizuje natychmiastowe odrzucenie zapytania (Fail-Closed Short-Circuit):** Jeśli wystąpi jakiekolwiek naruszenie reguły bezpieczeństwa (np. wykrycie skanu bez OCR, próba transferu danych poza EOG, błąd integralności), ogniwo **natychmiast rzuca wyjątek domenowy**, zatrzymując cały łańcuch.
-4. **Deleguje do następnika:** W przypadku pomyślnego wykonania krok przekazuje zaktualizowany `PipelineContext` do `self._pass_to_next(updated_context)`.
+Każde ogniwo obecne w zbudowanym łańcuchu:
+1. **Wykonuje operację domenową:** Wykrywa PII, ekstrahuje dokument, ocenia k-anonimowość lub tokenizuje dane (w łańcuchu znajdują się wyłącznie ogniwa aktywne dla danej konfiguracji).
+2. **Realizuje natychmiastowe odrzucenie zapytania (Fail-Closed Short-Circuit):** Jeśli wystąpi jakiekolwiek naruszenie reguły bezpieczeństwa (np. wykrycie skanu bez OCR, próba transferu danych poza EOG, błąd integralności), ogniwo **natychmiast rzuca wyjątek domenowy**, zatrzymując cały łańcuch.
+3. **Deleguje do następnika:** W przypadku pomyślnego wykonania krok przekazuje zaktualizowany `PipelineContext` do `self._pass_to_next(updated_context)` (wywołującego `self._next_handler.handle(updated_context)`).
 
 ```python
 class FilterHandler(Protocol):
-    @property
-    def is_enabled(self) -> bool: ...
     def set_next(self, handler: FilterHandler) -> FilterHandler: ...
     def handle(self, context: PipelineContext) -> PipelineContext: ...
 
 class BaseFilterHandler(ABC):
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(self) -> None:
         self._next_handler: FilterHandler | None = None
-        self._enabled: bool = enabled
-
-    @property
-    def is_enabled(self) -> bool:
-        return self._enabled
 
     def set_next(self, handler: FilterHandler) -> FilterHandler:
         self._next_handler = handler
         return handler
 
     def handle(self, context: PipelineContext) -> PipelineContext:
-        if not self._enabled:
-            return self._pass_to_next(context)
-        
         # Wykonanie logiki ogniwa z możliwością rzucenia błędu Fail-Closed
         updated_context = self._process(context)
         return self._pass_to_next(updated_context)
@@ -223,7 +213,7 @@ class BaseFilterHandler(ABC):
 1. **Detektory PII/PHI dla UE (`PIIDetector`):** `RegexPIIDetector` (dla PESEL, NIP, REGON, dowodów osobistych, paszportów, unijnych IBAN Modulo-97, VAT-UE/TIN, kart EKUZ, kart płatniczych Luhn), `TransformerNERDetector` (HerBERT, RoBERTa/GLiNER), `ContextRuleEnhancer`.
 2. **Strategie ochrony (`AnonymizationStrategy`):** `TokenizationStrategy` (odwracalna, powiązana z `VaultProxy`), `MaskingStrategy` (nieodwracalna), `GeneralizationStrategy` (uogólnianie cech w oparciu o `PublicDataDemographicsProvider` — bazy GUS/Eurostat), `SynthesisStrategy` (podstawianie realistycznych danych syntetycznych). Dobór strategii realizuje `StrategySelector`.
 3. **Ekstrakcja dokumentów (`DocumentExtractorStrategy`):** Dedykowane silniki parsowania dla PDF, DOCX, XLSX/ODS, wszystkich formatów tekstowych (TXT/MD, CSV/TSV, JSON/JSONL, XML/HTML/SVG, YAML/TOML/INI/ENV, kod źródłowy, logi i dowolne `text/*`), obrazów (OCR) oraz archiwów, wywoływane przez `DocumentExtractorHandler`.
-4. **Adaptery modeli LLM (`LLMProviderAdapter`):** Wymienne strategie komunikacji z API wybranego dostawcy (Azure OpenAI EU, Mistral AI, Anthropic Claude EOG, vLLM/Ollama), wywoływane przez `MultiProviderLLMDispatcher`.
+4. **Adaptery modeli LLM (`LLMProviderAdapter`):** Wymienne strategie komunikacji z API wybranego dostawcy (Google Gemini Vertex AI EOG, ChatGPT / Azure OpenAI EU, Mistral AI, Anthropic Claude EOG, vLLM/Ollama), wywoływane przez `MultiProviderLLMDispatcher`.
 
 ```python
 class PIIDetector(Protocol):
@@ -249,9 +239,9 @@ class LLMProviderAdapter(Protocol):
 
 **Rola:** Składanie łańcucha ogniw z konfiguracji użytkownika (`UserPipelineConfig`) za pośrednictwem `DynamicCoRFactory` i `PipelineBuilder` oraz **bezwzględna walidacja niezmienników i polityki Fail-Closed**:
 - **Budowa powiązań:** `PipelineBuilder` łączy zarejestrowane instancje `FilterHandler` za pomocą `set_next()`, zwracając głowę łańcucha (`head`).
-- **Weryfikacja Privacy by Design:** `PipelineBuilder` sprawdza nie tylko obecność, ale też **aktywność (`is_enabled`)** kluczowych ogniw. Dla `DataClass.MEDICAL` aktywne ogniwa `AnonymizationHandler`, `ResidencyPolicyHandler` oraz `AuditContextHandler` są obowiązkowe — próba ich wyłączenia kończy się błędem `PipelineConfigurationError`.
-- **Wymóg kolejności logicznej:** `PIIDetectorHandler` musi poprzedzać `AnonymizationHandler`, a aktywny `ResidencyPolicyHandler` musi znajdować się po anonimizacji (tuż przed `AuditContextHandler` i wyjściem do modelu).
-- **Dynamiczne składanie (`DynamicCoRFactory`):** Fabryka odczytuje deklaratywny profil `UserPipelineConfig` (klasa danych, aktywne detektory, próg $k_{min}$, polityka PDF/OCR, preferowany provider LLM) i deleguje złożenie oraz walidację łańcucha do `PipelineBuilder`.
+- **Weryfikacja Privacy by Design:** `PipelineBuilder` zakłada, że w łańcuchu znajdują się wyłącznie wybrane przez użytkownika ogniwa, i weryfikuje ich obecność oraz kolejność. Dla `DataClass.MEDICAL` ogniwa `AnonymizationHandler`, `ResidencyPolicyHandler` oraz `AuditContextHandler` (z zakazem `AuditLevel.NONE`) są obowiązkowe — próba zbudowania łańcucha bez nich kończy się błędem `PipelineConfigurationError`.
+- **Wymóg kolejności logicznej:** `PIIDetectorHandler` musi poprzedzać `AnonymizationHandler`, a `ResidencyPolicyHandler` musi znajdować się po anonimizacji (tuż przed `AuditContextHandler` i wyjściem do modelu).
+- **Stały zestaw do momentu zmiany ustawień (`DynamicCoRFactory`):** Fabryka odczytuje deklaratywny profil `UserPipelineConfig`, dodaje do `PipelineBuilder` **wyłącznie skonfigurowane ogniwa** (bez wyłączonych „pustych” kroków) i zwraca gotowy, bezstanowy łańcuch. Zbudowany łańcuch pozostaje **stały (cache'owany per profil/tenant)** przez wszystkie kolejne żądania aż do momentu, gdy użytkownik wprowadzi zmianę w ustawieniach aplikacji — dopiero wtedy `DynamicCoRFactory` i `PipelineBuilder` przebudowują oraz ponownie walidują nowy łańcuch.
 
 ```python
 class UserPipelineConfig(BaseModel):
@@ -296,17 +286,17 @@ class PipelineBuilder:
         return self
 
     def add_handler(self, handler: FilterHandler) -> Self:
-        if isinstance(handler, PIIDetectorHandler) and handler.is_enabled:
+        if isinstance(handler, PIIDetectorHandler):
             self._has_active_detector = True
-        elif isinstance(handler, AnonymizationHandler) and handler.is_enabled:
+        elif isinstance(handler, AnonymizationHandler):
             if not self._has_active_detector:
-                raise PipelineConfigurationError("Aktywny PIIDetectorHandler musi poprzedzać AnonymizationHandler.")
+                raise PipelineConfigurationError("PIIDetectorHandler musi poprzedzać AnonymizationHandler.")
             self._has_active_anonymizer = True
-        elif isinstance(handler, ResidencyPolicyHandler) and handler.is_enabled:
+        elif isinstance(handler, ResidencyPolicyHandler):
             if not self._has_active_anonymizer:
                 raise PipelineConfigurationError("ResidencyPolicyHandler musi występować po AnonymizationHandler.")
             self._has_active_residency = True
-        elif isinstance(handler, AuditContextHandler) and handler.is_enabled:
+        elif isinstance(handler, AuditContextHandler):
             self._has_active_audit = True
         self._handlers.append(handler)
         return self
@@ -386,27 +376,31 @@ Aby połączyć pełną wydajność rozmowy z ochroną przed analizą frekwencyj
 
 ### 3.6 Wielomodelowa integracja (Multi-Provider Dispatcher) i elastyczny wybór providera LLM
 
-System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wybór dostawcy LLM jest całkowicie dynamiczny i konfigurowalny przez klienta:
+System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera** i udostępnia dwa przejrzyste tryby integracji (**`Połącz LLM`** oraz **`Połącz Agenta`**):
 
-1. **Kaskada wyboru providera przez API (3 poziomy priorytetu):**
+1. **Dwie główne metody połączenia po stronie klienta:**
+   - **Metoda 1 — `Połącz LLM` (prosty czat / zapytanie z opcjonalnym plikiem):** dla użytkowników `Web Chat` oraz aplikacji wysyłających pojedyncze prompty i dokumenty (PDF, DOCX, XLSX, CSV, TXT…). Cykl: *1 zapytanie → anonimizacja → LLM → odtworzenie odpowiedzi (lub strumień SSE)*.
+   - **Metoda 2 — `Połącz Agenta` (wielokrokowa praca z narzędziami):** dla zewnętrznych agentów (`Claude Code CLI`, `Cursor`, `LangChain`) oraz agentów korzystających z narzędzi wewnętrznych (`ToolExecutionMiddleware`). Oprócz tekstu obsługiwany jest cały cykl **`tools` ↔ `tool_calls` / `tool_use` ↔ `tool_result`** z aktualizacją stanu w `PipelineMemento`.
+2. **Kaskada wyboru providera przez API (3 poziomy priorytetu):**
    Klient wysyłający żądanie do `APIGateway` może wskazać docelowego providera w jeden z trzech sposobów (rozwiązywanych w kolejności priorytetów):
-   - **Priorytet 1 — Jawny nagłówek lub pole JSON:** nagłówek HTTP `X-Target-Provider: mistral-ai` (lub `azure-openai`, `anthropic-eu`, `vllm-local`) albo pole w JSON: `{"model": "mistral-large-2407", "provider": "mistral-ai"}`.
-   - **Priorytet 2 — Prefiks w nazwie modelu (`provider/model`):** np. `"model": "mistral-ai/mistral-large-2407"` lub `"model": "vllm-local/bielik-11b"` — `APIGateway` automatycznie rozbija prefiks na docelowego providera i nazwę modelu. Dzięki temu gotowe narzędzia CLI i IDE (Claude Code, Cursor, LangChain, OpenAI/Anthropic SDK) mogą przełączać providera bez wstrzykiwania niestandardowych nagłówków HTTP.
+   - **Priorytet 1 — Jawny nagłówek lub pole JSON:** nagłówek HTTP `X-Target-Provider: gemini-eu` (lub `azure-openai`, `anthropic-eu`, `mistral-ai`, `vllm-local`) albo pole w JSON: `{"model": "gemini-2.5-pro", "provider": "gemini-eu"}`.
+   - **Priorytet 2 — Prefiks w nazwie modelu (`provider/model`):** np. `"model": "gemini-eu/gemini-2.5-pro"`, `"model": "azure-openai/gpt-4o"`, `"model": "mistral-ai/mistral-large-2407"` lub `"model": "vllm-local/bielik-11b"` — `APIGateway` automatycznie rozbija prefiks na docelowego providera i nazwę modelu. Dzięki temu gotowe narzędzia CLI i IDE (Claude Code, Cursor, LangChain, OpenAI/Anthropic SDK) mogą przełączać providera bez wstrzykiwania niestandardowych nagłówków HTTP.
    - **Priorytet 3 — Profil przypisany do klucza API (`UserPipelineConfig`):** domyślny provider zapisany w konfiguracji tenanta/klucza API (z możliwością dynamicznego przełączenia w trakcie sesji przez endpoint konfiguracyjny profilu).
-2. **Uniwersalne kontrolery w API Gateway i translacja protokołów (w tym `tool_calls`):**
+3. **Uniwersalne kontrolery w API Gateway i translacja protokołów (w tym `tool_calls`):**
    - **Natywny endpoint `/v1/process`:** dla aplikacji korporacyjnych przekazujących ustrukturyzowane konteksty biznesowe, załączniki i `ToolCall`.
    - **Endpoint `/v1/chat/completions`:** zgodny ze standardem OpenAI (`messages`, `tools`, `tool_calls`, SSE `choices[].delta`) — umożliwia podpięcie bibliotek `openai-python`, LangChain, LlamaIndex.
    - **Endpoint `/v1/messages`:** zgodny ze standardem Anthropic (`messages`, `tools`, `tool_use`, `tool_result`, SSE `content_block_delta`) — umożliwia bezproblemowe podpięcie narzędzi takich jak **Claude Code CLI** czy wtyczek IDE.
-   - **Kanoniczny format wewnętrzny:** `APIGateway` mapuje format wejściowy na ustandaryzowany, niezależny od dostawcy model w `PipelineContext` (obejmujący wiadomości, definicje `tools`, wywołania `tool_calls`/`tool_use` oraz wyniki `tool_result`). Gdy protokół klienta różni się od docelowego providera (np. Claude Code na `/v1/messages` kierowany do `mistral-ai`), `MultiProviderLLMDispatcher` wykonuje pełną translację dwukierunkową (w tym argumentów `tool_calls` ↔ `tool_use` oraz ramek strumienia SSE).
-3. **Multi-Provider Dispatcher (`MultiProviderLLMDispatcher`):**
-   Po przejściu łańcucha CoR i weryfikacji rezydencji danych (`ResidencyPolicyHandler`), moduł `MultiProviderLLMDispatcher` dobiera właściwy `LLMProviderAdapter` i kieruje zanonimizowany kontekst przez `EgressGateway` do wybranego docelowego providera działającego w EOG:
+   - **Kanoniczny format wewnętrzny:** `APIGateway` mapuje format wejściowy na ustandaryzowany, niezależny od dostawcy model w `PipelineContext` (obejmujący wiadomości, definicje `tools`, wywołania `tool_calls`/`tool_use` oraz wyniki `tool_result`). Gdy protokół klienta różni się od docelowego providera (np. Claude Code na `/v1/messages` kierowany do `gemini-eu` lub `mistral-ai`), `MultiProviderLLMDispatcher` wykonuje pełną translację dwukierunkową (w tym argumentów `tool_calls` ↔ `tool_use` oraz ramek strumienia SSE).
+4. **Multi-Provider Dispatcher (`MultiProviderLLMDispatcher`):**
+   Po przejściu łańcucha CoR i weryfikacji rezydencji danych (`ResidencyPolicyHandler`), moduł `MultiProviderLLMDispatcher` dobiera właściwy `LLMProviderAdapter`, dopina firmowy klucz API z `KMS` i kieruje zanonimizowany kontekst przez `EgressGateway` do wybranego docelowego providera działającego w EOG:
+   - **Google Gemini (Vertex AI EOG — Warszawa `europe-central2` / Frankfurt `europe-west3`):** Wywołanie modeli Gemini w ramach europejskich regionów Google Cloud.
+   - **ChatGPT / Azure OpenAI (Frankfurt / Dublin / EOG):** Wywołanie modeli GPT w ramach dedykowanych europejskich subskrypcji korporacyjnych.
+   - **Anthropic Claude (Region EOG):** Wywołanie modeli Claude hostowanych w strefie EOG (np. przez AWS Bedrock w regionie Frankfurt/Paryż lub Vertex AI EU).
    - **Mistral AI (Paryż / EOG):** Bezpośrednie wywołanie API modeli europejskich.
-   - **Azure OpenAI (Frankfurt / Dublin / EOG):** Wywołanie modeli GPT w ramach dedykowanych europejskich subskrypcji korporacyjnych.
-   - **Anthropic Claude (Region EOG):** Wywołanie modeli Claude hostowanych w strefie EOG (np. przez AWS Bedrock w regionie Frankfurt/Paryż).
    - **Lokalne instancje vLLM / Ollama:** Wywołanie modeli open-weight (np. Bielik, Llama 3) działających w infrastrukturze własnej (on-premise).
-4. **Najprostsze połączenie dla użytkownika nietechnicznego (Zero-Config Web/Desktop Chat UI):**
-   Użytkownicy biznesowi (prawnicy, lekarze, księgowi) nie muszą konfigurować zmiennych środowiskowych, kluczy API ani nagłówków HTTP. Aplikacja kliencka (Web Chat / lekka aplikacja desktopowa) łączy się bezpośrednio z `APIGateway` przez firmowe **SSO** i oferuje:
-   - **Wybór modelu z czytelnej listy (Dropdown):** nazwy zrozumiałe biznesowo (np. *„Mistral AI (Paryż / EOG)”*, *„GPT-4o (Azure Frankfurt)”*, *„Claude (EOG)”*, *„Model lokalny (On-Premise)”*), mapowane pod spodem na odpowiedniego providera w `APIGateway`.
+5. **Najprostsze połączenie dla użytkownika nietechnicznego (Zero-Config Web/Desktop Chat UI):**
+   Użytkownicy biznesowi (prawnicy, lekarze, księgowi) nie muszą konfigurować zmiennych środowiskowych, własnych kluczy API dostawców ani nagłówków HTTP. Aplikacja kliencka (Web Chat / lekka aplikacja desktopowa) łączy się bezpośrednio z `APIGateway` przez firmowe **SSO** i oferuje:
+   - **Wybór modelu z czytelnej listy (Dropdown):** nazwy zrozumiałe biznesowo (np. *„Google Gemini (Warszawa / EOG)”*, *„ChatGPT / GPT-4o (Azure Frankfurt)”*, *„Claude (EOG)”*, *„Mistral AI (Paryż / EOG)”*, *„Model lokalny (On-Premise)”*), mapowane pod spodem na odpowiedniego providera w `APIGateway`.
    - **Drag & Drop dla dokumentów:** przeciągnięcie pliku (PDF, DOCX, XLSX, CSV, TXT) automatycznie kieruje go przez potok *Extract-Then-Anonymize*.
    - **Izolacja sesji („Zamknij i otwórz = nowy zestaw tokenów”):** każda nowa rozmowa oraz ponowne uruchomienie aplikacji tworzy świeżą sesję ze zmienionym zestawem losowych tokenów, bez żadnej ingerencji użytkownika.
    - **Opcjonalny podgląd „Co widzi AI”:** przejrzysty podgląd zanonimizowanego tekstu przed wysyłką, budujący zaufanie do narzędzia.
@@ -420,7 +414,7 @@ System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wy
 | **Edge** | `APIGateway` | Pojedynczy punkt wejścia na brzegu; terminacja TLS, AuthN/AuthZ, rate limiting, uniwersalne kontrolery API (`/v1/process`, `/v1/messages`, `/v1/chat/completions`) | Gateway / Adapter |
 | **Config** | `UserPipelineConfig` | Deklaratywny profil konfiguracyjny filtrów, detektorów, progów i wybranego providera LLM | Configuration Model |
 | **Config** | `DynamicCoRFactory` | Dynamiczne mapowanie profilu `UserPipelineConfig` na wywołania `PipelineBuilder` w czasie uruchomienia | Factory |
-| **Pipeline (In)** | `BaseFilterHandler` | Klasa bazowa ogniw łańcucha z metodą `handle()`, flagą `is_enabled`, referencją `_next_handler` i polityką Fail-Closed | Chain of Responsibility |
+| **Pipeline (In)** | `BaseFilterHandler` | Klasa bazowa ogniw łańcucha z metodą `handle()`, referencją `_next_handler` i polityką Fail-Closed | Chain of Responsibility |
 | **Pipeline (In)** | `PipelineBuilder` | Budowanie łańcucha z konfiguracji, spięcie referencji i walidacja niezmienników Privacy by Design | Builder |
 | **Pipeline (In)** | `DocumentExtractorHandler` | Ekstrakcja tekstu z PDF, DOCX, XLSX/ODS, wszystkich formatów tekstowych (TXT/MD, CSV/TSV, JSON/JSONL, XML/HTML, YAML/TOML/INI, kod/logi), obrazów (OCR) i archiwów w piaskownicy przez `DocumentExtractorStrategy` | CoR Handler + Strategy |
 | **Pipeline (In)** | `LanguageDetectorHandler` | Rozpoznawanie języków europejskich (PL, EN, DE, FR...) | CoR Handler |
@@ -434,7 +428,7 @@ System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wy
 | **Pipeline (Out)** | `ResponseRestorer` | Przywracanie oryginalnych wartości w odpowiedzi lub strumieniu SSE (w tym w argumentach `tool_calls` / `tool_use`) z użyciem `PipelineMemento` i `VaultProxy` | CoR Handler / Restorer |
 | **Agent / Tools** | `ToolExecutionMiddleware` | Przechwytywanie wewnętrznych wywołań `ToolCall`, autoryzowana de-tokenizacja argumentów w zaufanej strefie, wykonanie narzędzia i natychmiastowa sanityzacja wyniku przez Inbound CoR (*Dynamic Memento Expansion*) | Middleware / Interceptor |
 | **Dispatcher** | `MultiProviderLLMDispatcher` | Kierowanie zanonimizowanego promptu do wybranego przez klienta providera w EOG przez `LLMProviderAdapter` | Dispatcher / Strategy |
-| **Egress** | `EgressGateway` | Brama wyjściowa wymuszająca filtrowanie domen i Geo-IP wyłącznie w granicach EOG | Egress Gate |
+| **Egress** | `EgressGateway` | Infrastrukturalna brama wyjściowa (*Defense-in-Depth*): twarda allowlista domen i Geo-IP EOG fizycznie blokująca ruch poza EOG nawet w razie błędu konfiguracji aplikacji | Egress Gate |
 | **State** | `PipelineMemento` | Niemutowalny stan sesji, rejestr klastrów koreferencyjnych (`EntityCluster`, `EntityOccurrence`) | Memento |
 | **State** | `RetentionPolicyEngine` / `RetentionWorker` | Wyznaczanie TTL sesji (RODO art. 17) oraz okresowe usuwanie wygasłych migawek i rekordów `TokenDB` | Policy / Worker |
 | **Vault** | `VaultProxy` | Jedyny wzorzec Proxy w systemie: kontrola dostępu (RBAC/ABAC), audyt WORM, rate-limit | Protection Proxy |
@@ -590,26 +584,26 @@ sequenceDiagram
 
 ---
 
-### 5.7 Wybór providera LLM: tryb nietechniczny (Web UI) i narzędzia deweloperskie
+### 5.7 Tryby integracji: „Połącz LLM” i „Połącz Agenta”
 
-**Tryb dla użytkownika nietechnicznego (Zero-Config):**
-1. Użytkownik otwiera aplikację Web Chat / desktopową i loguje się przez SSO.
-2. Z listy rozwijanej wybiera interesujący go model (np. *„Mistral AI — Paryż (EOG)”*), opcjonalnie przeciąga plik (PDF/DOCX/CSV/TXT) i pisze pytanie jak w zwykłym czacie.
-3. W ramach otwartej rozmowy używany jest jeden spójny zestaw losowych tokenów; po zamknięciu aplikacji i ponownym jej otwarciu tworzona jest nowa sesja z zupełnie nowym zestawem tokenów.
+**Metoda 1 — `Połącz LLM` (Web Chat Zero-Config lub bezpośrednie API):**
+1. Użytkownik nietechniczny otwiera aplikację Web Chat / desktopową i loguje się przez SSO (bez własnych kluczy API do dostawców LLM).
+2. Z listy rozwijanej wybiera docelowy model (np. *„Google Gemini — Warszawa (EOG)”*, *„ChatGPT / GPT-4o — Frankfurt”*, *„Claude — EOG”*, *„Mistral AI — Paryż”*), opcjonalnie przeciąga plik (PDF/DOCX/CSV/TXT) i pisze pytanie jak w zwykłym czacie.
+3. W ramach otwartej rozmowy używany jest jeden stały zestaw losowych tokenów; po zamknięciu aplikacji i ponownym jej otwarciu tworzona jest nowa sesja z zupełnie nowym zestawem tokenów.
 
-**Tryb dla programistów i agentów CLI:**
-Programista lub system automatyzacji może elastycznie przełączać modele i dostawców:
+**Metoda 2 — `Połącz Agenta` (Claude Code CLI, Cursor, SDK z obsługą `tool_calls`):**
+Programista lub agent zewnętrzny kieruje swój ruch na `APIGateway` (podając nasz adres URL oraz firmowy token naszej aplikacji) i wybiera dowolnego providera w EOG:
 ```bash
 # Użycie Claude Code z wybranym providerem w EOG przez prefiks provider/model (bez własnych nagłówków):
 export ANTHROPIC_BASE_URL="http://gateway:8000/v1"
 export ANTHROPIC_API_KEY="corp-sandbox-token"
-claude --model "mistral-ai/mistral-large-2407" "Zrefaktoryzuj moduł fakturowania w pliku src/invoice_service.py"
+claude --model "gemini-eu/gemini-2.5-pro" "Zrefaktoryzuj moduł fakturowania w pliku src/invoice_service.py"
 
-# Albo bezpośrednie wywołanie API z jawnym nagłówkiem X-Target-Provider i obsługą tool_calls:
+# Albo bezpośrednie wywołanie API (ChatGPT / Azure OpenAI EU) z jawnym nagłówkiem i obsługą tool_calls:
 curl -X POST http://gateway:8000/v1/chat/completions \
   -H "Authorization: Bearer corp-token" \
-  -H "X-Target-Provider: mistral-ai" \
-  -d '{"model": "mistral-large-2407", "messages": [{"role": "user", "content": "Przeanalizuj umowę..."}], "tools": [...]}'
+  -H "X-Target-Provider: azure-openai" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Przeanalizuj umowę..."}], "tools": [...]}'
 ```
 
 1. **Przejęcie żądania i wybór providera w Gateway:** `APIGateway` rozpoznaje żądanie, weryfikuje uprawnienia, rozwiązuje docelowego providera według kaskady (`X-Target-Provider` → prefiks `provider/model` → profil API Key w `UserPipelineConfig`) i buduje potok przez `DynamicCoRFactory`.
@@ -775,7 +769,7 @@ Architektura opiera się na 5 odizolowanych strefach sieciowych:
 2. **Trusted App Zone:** Kontenery silnika łańcucha Chain of Responsibility, piaskownice ekstrakcji dokumentów (gVisor/nsjail), klaster pamięci podręcznej Redis (dla Memento) oraz wolumen NVMe z lokalną bazą GUS/Eurostat.
 3. **Cryptographic Enclave:** Dedykowana podsieć izolowana z `VaultProxy`, `VaultCore`, bazą PostgreSQL `TokenDB` oraz połączeniem z modułem HSM / Cloud KMS.
 4. **Compliance Zone:** Niezmienne repozytorium WORM (S3 Object Lock w trybie Compliance) i integracja z SIEM.
-5. **Egress Zone:** `EgressGateway` z twardym filtrowaniem domen i Geo-IP gwarantującym, że ruch nie opuszcza EOG.
+5. **Egress Zone:** `EgressGateway` działający jako sieciowa zapora *Defense-in-Depth* (twarda allowlista domen i Geo-IP EOG, fizycznie blokująca wyjście ruchu poza EOG nawet w przypadku błędnej konfiguracji w warstwie aplikacji).
 
 ---
 
@@ -821,9 +815,10 @@ graph TD
     end
 
     subgraph ExternalLLM["Dozwolone Modele LLM w EOG"]
-        LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
-        LLM_Azure["☁️ Azure OpenAI (Frankfurt / EOG)"]
+        LLM_Gemini["☁️ Google Gemini (Vertex AI EOG)"]
+        LLM_Azure["☁️ ChatGPT / Azure OpenAI (Frankfurt / EOG)"]
         LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
+        LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
         LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
     end
 
@@ -853,7 +848,7 @@ graph TD
 
     CoR_Pods <-->|"Sanitized Prompts / LLM Response & SSE"| Dispatcher_Pod
     Dispatcher_Pod <--> Egress_GW
-    Egress_GW <-->|"Zgodne z RODO połączenie EOG"| LLM_Mistral & LLM_Azure & LLM_Claude & LLM_Local
+    Egress_GW <-->|"Zgodne z RODO połączenie EOG"| LLM_Gemini & LLM_Mistral & LLM_Azure & LLM_Claude & LLM_Local
 
     style DMZ fill:#e1f5fe,stroke:#0288d1
     style AppVPC fill:#e8f5e9,stroke:#388e3c
@@ -919,7 +914,7 @@ Wszystkie warstwy bezstanowe (`APIGateway`, `Processing Engine Pods`, `MultiProv
 | **ADR-007** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + VaultProxy** | Accepted | Przechwytywanie wywołań narzędzi, de-tokenizacja argumentów w zaufanej strefie, natychmiastowa tokenizacja wyników narzędzia i wersjonowane rozszerzanie Memento. |
 | **ADR-008** | Hybrid Unstructured PII Detection (Ensemble NER & Enhancers) | **Strategy** | Accepted | Połączenie regexów ze sprawdzaniem sum kontrolnych dla identyfikatorów PL/UE, modeli Transformer NER oraz reguł kontekstowych niwelujących *capitalization bias*. |
 | **ADR-009** | Extract-Then-Anonymize Multi-Format Document Processing (Fail-Closed) | **Fail-Closed Gate** | Accepted | Całkowity zakaz wysyłania surowych binariów do LLM; ekstrakcja czystego tekstu w piaskownicy bez dostępu do sieci; blokada i odrzucenie skanów bez lokalnego OCR. |
-| **ADR-010** | Unified Edge API Gateway with Multi-Provider Dispatcher | **Gateway + Dispatcher** | Accepted | API Gateway jako jedyny punkt wejścia na brzegu; eliminacja zbędnego proxy na wejściu; obsługa wyboru dowolnego providera LLM w EOG (Mistral, Azure, Anthropic, vLLM). |
+| **ADR-010** | Unified Edge API Gateway with Multi-Provider Dispatcher | **Gateway + Dispatcher** | Accepted | API Gateway jako jedyny punkt wejścia na brzegu z trybami `Połącz LLM` i `Połącz Agenta`; eliminacja zbędnego proxy na wejściu; obsługa wyboru dowolnego providera LLM w EOG (Google Gemini Vertex AI EOG, ChatGPT/Azure OpenAI, Anthropic Claude, Mistral, vLLM). |
 | **ADR-011** | User-Configurable Chain Execution via Dynamic CoR Factory | **Chain of Responsibility** | Accepted | Dynamiczne składanie łańcucha ogniw w czasie uruchomienia z profilu konfiguracyjnego użytkownika (włączanie/wyłączanie filtrów, parametry, progi). |
 | **ADR-012** | Offline Public Demographic Baselines (GUS & Eurostat) for k-Anonymity | **Offline Data Provider** | Accepted | Obliczanie ryzyka k-anonimowości z wykorzystaniem lokalnie zindeksowanych rejestrów GUS/Eurostat; eliminacja zapytań sieciowych w trakcie przetwarzania promptu. |
 | **ADR-013** | Session-Scoped Random Alias Tokenization with Restart Rotation | **Memento + Strategy** | Accepted | Losowe, niesekwencyjne aliasy (`<PERSON_7a9f>`) są stałe w ramach jednej sesji (brak narzutu CPU i pełna spójność kontekstu) oraz generowane od nowa przy każdej nowej sesji po zamknięciu aplikacji lub przy zmianie providera. |
@@ -956,4 +951,4 @@ Wszystkie warstwy bezstanowe (`APIGateway`, `Processing Engine Pods`, `MultiProv
    - Na brzegu sieci działa **wyłącznie API Gateway** jako centralny punkt wejścia (terminacja TLS, AuthN/AuthZ, rate limiting, adaptery protokołów).
    - Wzorzec **Proxy** (GoF) ma swoje jedyne miejsce w warstwie kryptograficznej jako **Protection Proxy (`VaultProxy`)**, zabezpieczając dostęp do `VaultCore`.
 3. **Elastyczny wybór providera LLM (Brak vendor lock-in):**
-   - System nie jest sztywno związany z żadnym dostawcą. Poprzez API Gateway i `MultiProviderLLMDispatcher` klient może kierować zanonimizowany ruch do dowolnego modelu działającego w EOG (Azure OpenAI, Mistral AI, Anthropic EU, lokalne vLLM).
+   - System nie jest sztywno związany z żadnym dostawcą. Poprzez API Gateway (tryby `Połącz LLM` i `Połącz Agenta`) oraz `MultiProviderLLMDispatcher` klient może kierować zanonimizowany ruch do dowolnego modelu działającego w EOG (Google Gemini Vertex AI EOG, ChatGPT / Azure OpenAI EU, Anthropic Claude EOG, Mistral AI, lokalne vLLM).
