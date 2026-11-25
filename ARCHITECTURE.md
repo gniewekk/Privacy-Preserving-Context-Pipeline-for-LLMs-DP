@@ -800,7 +800,7 @@ graph TD
     end
 
     subgraph VaultVPC["Cryptographic Enclave (VPC Isolated Subnet 2)"]
-        Vault_Pods["🛡️ VaultProxy & VaultCore Pods\n(mTLS Only, Zero Public Route - JEDYNE PROXY W SYSTEMIE)"]
+        Vault_Pods["🛡️ VaultProxy & VaultCore Pods\n(mTLS Only, Zero Public Route)"]
         Token_DB[("🗄️ PostgreSQL TokenDB\n(AES-256 Storage, Encrypted Tables)")]
         KMS_Service["🗝️ Dedicated HSM / Cloud KMS\n(FIPS 140-2 Level 3)"]
     end
