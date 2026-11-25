@@ -70,7 +70,8 @@ Architektura systemu rozdziela wejście brzegowe (API Gateway), konfigurowalny �
 
 ```mermaid
 flowchart TD
-    Client["🖥️ Klienci: Aplikacje webowe / SDK"]
+    Client["🖥️ Klienci: Aplikacje biznesowe / SDK"]
+    WebUI["💬 Prosty Web Chat / Aplikacja Desktopowa\n(Zero-Config dla nietechnicznych: SSO, lista modeli, Drag & Drop)"]
     DevCli["💻 Klienci CLI / Agenci (Claude Code, IDE)"]
     
     subgraph EdgeLayer["🌐 Warstwa Brzegowa (Edge Zone)"]
@@ -83,7 +84,7 @@ flowchart TD
 
     subgraph PipelineCore["⚙️ Łańcuch Przetwarzania (Chain of Responsibility)"]
         CoRPipeline["🔗 Konfigurowalny Łańcuch Ogniw CoR (składany przez Builder)"]
-        MultiDoc["📄 DocumentExtractorHandler\n(PDF, DOCX, XLSX, CSV, OCR)"]
+        MultiDoc["📄 DocumentExtractorHandler\n(PDF, DOCX, XLSX, wszystkie formaty tekstowe, OCR)"]
         LangHandler["🌐 LanguageDetectorHandler"]
         PIIHandler["🔍 PIIDetectorHandler\n(Dobór detektorów ze Strategy)"]
         RiskHandler["📊 RiskAssessmentHandler\n(k-Anonymity + GUS/Eurostat)"]
@@ -122,6 +123,7 @@ flowchart TD
     end
 
     Client -->|"Natywne żądanie REST"| APIGW
+    WebUI -->|"HTTPS / SSO (wybór modelu z listy)"| APIGW
     DevCli -->|"Żądanie CLI / API"| APIGW
     
     ConfigMgr -.->|"DynamicCoRFactory + PipelineBuilder"| CoRPipeline
@@ -149,6 +151,7 @@ flowchart TD
     Restorer <-->|"Autoryzowana de-tokenizacja"| VaultProxy
     Restorer --> APIGW
     APIGW -->|"Odtworzona odpowiedź / Strumień"| Client
+    APIGW -->|"Odtworzona odpowiedź w czacie"| WebUI
     APIGW -->|"Odtworzony strumień SSE"| DevCli
 
     style EdgeLayer fill:#e1f5fe,stroke:#0288d1
@@ -219,7 +222,7 @@ class BaseFilterHandler(ABC):
 **Rola:** Wymienne algorytmy dobierane dynamicznie na podstawie konfiguracji użytkownika (zgodność z zasadą Open-Closed — dodanie nowej strategii nie wymaga modyfikacji ogniw CoR):
 1. **Detektory PII/PHI dla UE (`PIIDetector`):** `RegexPIIDetector` (dla PESEL, NIP, REGON, dowodów osobistych, paszportów, unijnych IBAN Modulo-97, VAT-UE/TIN, kart EKUZ, kart płatniczych Luhn), `TransformerNERDetector` (HerBERT, RoBERTa/GLiNER), `ContextRuleEnhancer`.
 2. **Strategie ochrony (`AnonymizationStrategy`):** `TokenizationStrategy` (odwracalna, powiązana z `VaultProxy`), `MaskingStrategy` (nieodwracalna), `GeneralizationStrategy` (uogólnianie cech w oparciu o `PublicDataDemographicsProvider` — bazy GUS/Eurostat), `SynthesisStrategy` (podstawianie realistycznych danych syntetycznych). Dobór strategii realizuje `StrategySelector`.
-3. **Ekstrakcja dokumentów (`DocumentExtractorStrategy`):** Dedykowane silniki parsowania dla PDF, DOCX, XLSX/CSV, obrazów (OCR) oraz archiwów, wywoływane przez `DocumentExtractorHandler`.
+3. **Ekstrakcja dokumentów (`DocumentExtractorStrategy`):** Dedykowane silniki parsowania dla PDF, DOCX, XLSX/ODS, wszystkich formatów tekstowych (TXT/MD, CSV/TSV, JSON/JSONL, XML/HTML/SVG, YAML/TOML/INI/ENV, kod źródłowy, logi i dowolne `text/*`), obrazów (OCR) oraz archiwów, wywoływane przez `DocumentExtractorHandler`.
 4. **Adaptery modeli LLM (`LLMProviderAdapter`):** Wymienne strategie komunikacji z API wybranego dostawcy (Azure OpenAI EU, Mistral AI, Anthropic Claude EOG, vLLM/Ollama), wywoływane przez `MultiProviderLLMDispatcher`.
 
 ```python
@@ -326,6 +329,12 @@ class PipelineBuilder:
 #### Rola wzorca
 `PipelineMemento` odpowiada za zachowanie stanu sesji i mapowań tokenów bez ujawniania danych jawnych. 
 
+#### Rotacja zestawu tokenów per sesja (Session-Scoped Token Set)
+Aby połączyć pełną wydajność rozmowy z ochroną przed analizą frekwencyjną i korelacją między sesjami:
+- **Jeden stały, losowy zestaw na czas trwania sesji:** W obrębie jednej aktywnej sesji (i tego samego wybranego providera) dana encja PII otrzymuje przypisany kryptograficznie losowy, niesekwencyjny alias (np. `<PERSON_7a9f>` zamiast `<PERSON_1>`). Eliminuje to koszt przeliczania całej historii przy każdej kolejnej turze czatu (0 ms narzutu re-tokenizacji w trakcie rozmowy) oraz zapewnia pełną spójność kontekstu dla LLM.
+- **Nowy zestaw po zamknięciu aplikacji i ponownym otwarciu:** Zamknięcie aplikacji / wylogowanie / kliknięcie „Nowa rozmowa” kończy bieżącą sesję. Po ponownym uruchomieniu aplikacji otwierana jest nowa sesja (`session_id`), dla której `AnonymizationHandler` i `PipelineMemento` generują **zupełnie nowy, niepowiązany zestaw losowych tokenów** (np. ta sama osoba w nowej sesji otrzymuje `<PERSON_4b1c>`). Uniemożliwia to zewnętrznym dostawcom LLM łączenie logów między sesjami.
+- **Zmiana providera w trakcie sesji:** Jeśli użytkownik przełączy docelowego providera w środku rozmowy, nowy provider otrzymuje świeżą permutację tokenów, dzięki czemu różni dostawcy nie mogą skorelować swoich logów.
+
 #### Polimorficzna Dynamiczna Tokenizacja Powtórzeń (Coreference Clustering)
 Gdy to samo imię i nazwisko pojawia się wielokrotnie:
 1. Każde wystąpienie otrzymuje **unikalny token instancyjny** (np. `<PERSON_ALPHA_INST_1>`, `<PERSON_ALPHA_INST_2>`).
@@ -359,21 +368,28 @@ Gdy to samo imię i nazwisko pojawia się wielokrotnie:
 
 System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wybór dostawcy LLM jest całkowicie dynamiczny i konfigurowalny przez klienta:
 
-1. **Wskazanie providera przez API:**
-   Klient wysyłający żądanie do `APIGateway` może określić docelowy model i providera:
-   - w nagłówku HTTP: `X-Target-Provider: mistral-ai` (lub `azure-openai`, `anthropic-eu`, `vllm-local`),
-   - w parametrach żądania JSON: `{"model": "mistral-large-2407", "provider": "mistral-ai"}`,
-   - w domyślnym profilu konfiguracyjnym tenanta (`UserPipelineConfig`).
-2. **Uniwersalne kontrolery w API Gateway:**
-   - **Natywny endpoint `/v1/process`:** dla aplikacji korporacyjnych przekazujących ustrukturyzowane konteksty biznesowe i pliki.
-   - **Endpoint `/v1/chat/completions`:** zgodny ze standardem OpenAI — umożliwia podpięcie bibliotek `openai-python`, LangChain, LlamaIndex.
-   - **Endpoint `/v1/messages`:** zgodny ze standardem Anthropic — umożliwia bezproblemowe podpięcie narzędzi takich jak **Claude Code CLI** czy wtyczek programistycznych.
+1. **Kaskada wyboru providera przez API (3 poziomy priorytetu):**
+   Klient wysyłający żądanie do `APIGateway` może wskazać docelowego providera w jeden z trzech sposobów (rozwiązywanych w kolejności priorytetów):
+   - **Priorytet 1 — Jawny nagłówek lub pole JSON:** nagłówek HTTP `X-Target-Provider: mistral-ai` (lub `azure-openai`, `anthropic-eu`, `vllm-local`) albo pole w JSON: `{"model": "mistral-large-2407", "provider": "mistral-ai"}`.
+   - **Priorytet 2 — Prefiks w nazwie modelu (`provider/model`):** np. `"model": "mistral-ai/mistral-large-2407"` lub `"model": "vllm-local/bielik-11b"` — `APIGateway` automatycznie rozbija prefiks na docelowego providera i nazwę modelu. Dzięki temu gotowe narzędzia CLI i IDE (Claude Code, Cursor, LangChain, OpenAI/Anthropic SDK) mogą przełączać providera bez wstrzykiwania niestandardowych nagłówków HTTP.
+   - **Priorytet 3 — Profil przypisany do klucza API (`UserPipelineConfig`):** domyślny provider zapisany w konfiguracji tenanta/klucza API (z możliwością dynamicznego przełączenia w trakcie sesji przez endpoint konfiguracyjny profilu).
+2. **Uniwersalne kontrolery w API Gateway i translacja protokołów (w tym `tool_calls`):**
+   - **Natywny endpoint `/v1/process`:** dla aplikacji korporacyjnych przekazujących ustrukturyzowane konteksty biznesowe, załączniki i `ToolCall`.
+   - **Endpoint `/v1/chat/completions`:** zgodny ze standardem OpenAI (`messages`, `tools`, `tool_calls`, SSE `choices[].delta`) — umożliwia podpięcie bibliotek `openai-python`, LangChain, LlamaIndex.
+   - **Endpoint `/v1/messages`:** zgodny ze standardem Anthropic (`messages`, `tools`, `tool_use`, `tool_result`, SSE `content_block_delta`) — umożliwia bezproblemowe podpięcie narzędzi takich jak **Claude Code CLI** czy wtyczek IDE.
+   - **Kanoniczny format wewnętrzny:** `APIGateway` mapuje format wejściowy na ustandaryzowany, niezależny od dostawcy model w `PipelineContext` (obejmujący wiadomości, definicje `tools`, wywołania `tool_calls`/`tool_use` oraz wyniki `tool_result`). Gdy protokół klienta różni się od docelowego providera (np. Claude Code na `/v1/messages` kierowany do `mistral-ai`), `MultiProviderLLMDispatcher` wykonuje pełną translację dwukierunkową (w tym argumentów `tool_calls` ↔ `tool_use` oraz ramek strumienia SSE).
 3. **Multi-Provider Dispatcher (`MultiProviderLLMDispatcher`):**
    Po przejściu łańcucha CoR i weryfikacji rezydencji danych (`ResidencyPolicyHandler`), moduł `MultiProviderLLMDispatcher` dobiera właściwy `LLMProviderAdapter` i kieruje zanonimizowany kontekst przez `EgressGateway` do wybranego docelowego providera działającego w EOG:
    - **Mistral AI (Paryż / EOG):** Bezpośrednie wywołanie API modeli europejskich.
    - **Azure OpenAI (Frankfurt / Dublin / EOG):** Wywołanie modeli GPT w ramach dedykowanych europejskich subskrypcji korporacyjnych.
    - **Anthropic Claude (Region EOG):** Wywołanie modeli Claude hostowanych w strefie EOG (np. przez AWS Bedrock w regionie Frankfurt/Paryż).
    - **Lokalne instancje vLLM / Ollama:** Wywołanie modeli open-weight (np. Bielik, Llama 3) działających w infrastrukturze własnej (on-premise).
+4. **Najprostsze połączenie dla użytkownika nietechnicznego (Zero-Config Web/Desktop Chat UI):**
+   Użytkownicy biznesowi (prawnicy, lekarze, księgowi) nie muszą konfigurować zmiennych środowiskowych, kluczy API ani nagłówków HTTP. Aplikacja kliencka (Web Chat / lekka aplikacja desktopowa) łączy się bezpośrednio z `APIGateway` przez firmowe **SSO** i oferuje:
+   - **Wybór modelu z czytelnej listy (Dropdown):** nazwy zrozumiałe biznesowo (np. *„Mistral AI (Paryż / EOG)”*, *„GPT-4o (Azure Frankfurt)”*, *„Claude (EOG)”*, *„Model lokalny (On-Premise)”*), mapowane pod spodem na odpowiedniego providera w `APIGateway`.
+   - **Drag & Drop dla dokumentów:** przeciągnięcie pliku (PDF, DOCX, XLSX, CSV, TXT) automatycznie kieruje go przez potok *Extract-Then-Anonymize*.
+   - **Izolacja sesji („Zamknij i otwórz = nowy zestaw tokenów”):** każda nowa rozmowa oraz ponowne uruchomienie aplikacji tworzy świeżą sesję ze zmienionym zestawem losowych tokenów, bez żadnej ingerencji użytkownika.
+   - **Opcjonalny podgląd „Co widzi AI”:** przejrzysty podgląd zanonimizowanego tekstu przed wysyłką, budujący zaufanie do narzędzia.
 
 ---
 
@@ -386,7 +402,7 @@ System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wy
 | **Config** | `DynamicCoRFactory` | Dynamiczne mapowanie profilu `UserPipelineConfig` na wywołania `PipelineBuilder` w czasie uruchomienia | Factory |
 | **Pipeline (In)** | `BaseFilterHandler` | Klasa bazowa ogniw łańcucha z metodą `handle()`, flagą `is_enabled`, referencją `_next_handler` i polityką Fail-Closed | Chain of Responsibility |
 | **Pipeline (In)** | `PipelineBuilder` | Budowanie łańcucha z konfiguracji, spięcie referencji i walidacja niezmienników Privacy by Design | Builder |
-| **Pipeline (In)** | `DocumentExtractorHandler` | Ekstrakcja tekstu z PDF, DOCX, XLSX, CSV, obrazów (OCR) i archiwów w piaskownicy przez `DocumentExtractorStrategy` | CoR Handler + Strategy |
+| **Pipeline (In)** | `DocumentExtractorHandler` | Ekstrakcja tekstu z PDF, DOCX, XLSX/ODS, wszystkich formatów tekstowych (TXT/MD, CSV/TSV, JSON/JSONL, XML/HTML, YAML/TOML/INI, kod/logi), obrazów (OCR) i archiwów w piaskownicy przez `DocumentExtractorStrategy` | CoR Handler + Strategy |
 | **Pipeline (In)** | `LanguageDetectorHandler` | Rozpoznawanie języków europejskich (PL, EN, DE, FR...) | CoR Handler |
 | **Pipeline (In)** | `PIIDetectorHandler` | Hybrydowy detektor danych osobowych specyficznych dla Polski i UE (`PIIDetector`) | CoR Handler + Strategy |
 | **Pipeline (In)** | `RiskAssessmentHandler` | Szacowanie ryzyka re-identyfikacji i k-anonimowości w oparciu o `PublicDataDemographicsProvider` | CoR Handler |
@@ -395,7 +411,8 @@ System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wy
 | **Pipeline (In)** | `AuditContextHandler` | Skompletowanie metadanych audytowych i zapis zdarzenia zakończenia potoku wejściowego | CoR Handler |
 | **Pipeline (Out)** | `OutputPIIDetectorHandler` | Skanowanie odpowiedzi LLM przed rekonstrukcją w poszukiwaniu nieoczekiwanych wycieków PII | CoR Handler |
 | **Pipeline (Out)** | `WindowBufferingHandler` | Buforowanie okien `<...>` w strumieniu SSE w celu atomowej de-tokenizacji placeholderów | Streaming CoR Handler |
-| **Pipeline (Out)** | `ResponseRestorer` | Przywracanie oryginalnych wartości w odpowiedzi lub strumieniu SSE z użyciem `PipelineMemento` i `VaultProxy` | CoR Handler / Restorer |
+| **Pipeline (Out)** | `ResponseRestorer` | Przywracanie oryginalnych wartości w odpowiedzi lub strumieniu SSE (w tym w argumentach `tool_calls` / `tool_use`) z użyciem `PipelineMemento` i `VaultProxy` | CoR Handler / Restorer |
+| **Agent / Tools** | `ToolExecutionMiddleware` | Przechwytywanie wewnętrznych wywołań `ToolCall`, autoryzowana de-tokenizacja argumentów w zaufanej strefie, wykonanie narzędzia i natychmiastowa sanityzacja wyniku przez Inbound CoR (*Dynamic Memento Expansion*) | Middleware / Proxy |
 | **Dispatcher** | `MultiProviderLLMDispatcher` | Kierowanie zanonimizowanego promptu do wybranego przez klienta providera w EOG przez `LLMProviderAdapter` | Dispatcher / Strategy |
 | **Egress** | `EgressGateway` | Brama wyjściowa wymuszająca filtrowanie domen i Geo-IP wyłącznie w granicach EOG | Egress Gate |
 | **State** | `PipelineMemento` | Niemutowalny stan sesji, rejestr klastrów koreferencyjnych (`EntityCluster`, `EntityOccurrence`) | Memento |
@@ -554,27 +571,33 @@ sequenceDiagram
 
 ---
 
-### 5.7 Wybór providera LLM przez API i obsługa narzędzi deweloperskich
+### 5.7 Wybór providera LLM: tryb nietechniczny (Web UI) i narzędzia deweloperskie
 
+**Tryb dla użytkownika nietechnicznego (Zero-Config):**
+1. Użytkownik otwiera aplikację Web Chat / desktopową i loguje się przez SSO.
+2. Z listy rozwijanej wybiera interesujący go model (np. *„Mistral AI — Paryż (EOG)”*), opcjonalnie przeciąga plik (PDF/DOCX/CSV/TXT) i pisze pytanie jak w zwykłym czacie.
+3. W ramach otwartej rozmowy używany jest jeden spójny zestaw losowych tokenów; po zamknięciu aplikacji i ponownym jej otwarciu tworzona jest nowa sesja z zupełnie nowym zestawem tokenów.
+
+**Tryb dla programistów i agentów CLI:**
 Programista lub system automatyzacji może elastycznie przełączać modele i dostawców:
 ```bash
-# Użycie Claude Code z modelami w EOG przez nasz Gateway:
+# Użycie Claude Code z wybranym providerem w EOG przez prefiks provider/model (bez własnych nagłówków):
 export ANTHROPIC_BASE_URL="http://gateway:8000/v1"
 export ANTHROPIC_API_KEY="corp-sandbox-token"
-claude "Zrefaktoryzuj moduł fakturowania w pliku src/invoice_service.py"
+claude --model "mistral-ai/mistral-large-2407" "Zrefaktoryzuj moduł fakturowania w pliku src/invoice_service.py"
 
-# Albo bezpośrednie wywołanie API z wyborem Mistral AI:
+# Albo bezpośrednie wywołanie API z jawnym nagłówkiem X-Target-Provider i obsługą tool_calls:
 curl -X POST http://gateway:8000/v1/chat/completions \
   -H "Authorization: Bearer corp-token" \
   -H "X-Target-Provider: mistral-ai" \
-  -d '{"model": "mistral-large", "messages": [{"role": "user", "content": "Przeanalizuj umowę..."}]}'
+  -d '{"model": "mistral-large-2407", "messages": [{"role": "user", "content": "Przeanalizuj umowę..."}], "tools": [...]}'
 ```
 
-1. **Przejęcie żądania w Gateway:** `APIGateway` rozpoznaje żądanie, weryfikuje uprawnienia i buduje potok z `UserPipelineConfig` przez `DynamicCoRFactory`.
-2. **Sanityzacja w łańcuchu CoR:** Wykrywane są sekrety, tokeny `.env` oraz PII (PESEL, NIP, nazwiska) i zastępowane tokenami polimorficznymi.
-3. **Fail-Closed Gate:** W razie jakiegokolwiek błędu (np. próba użycia niedozwolonego modelu poza EOG) zapytanie jest natychmiast odrzucane z kodem HTTP.
-4. **Wysłanie do wybranego providera:** `MultiProviderLLMDispatcher` kieruje zanonimizowaną treść przez `EgressGateway` do wskazanego API (np. Mistral w Paryżu).
-5. **Streaming de-tokenizacji:** Strumień SSE odpowiedzi przechodzi przez `Outbound Chain` (`OutputPIIDetectorHandler` → `WindowBufferingHandler` → `ResponseRestorer`) i jest bezpiecznie zwracany przez `APIGateway` do klienta.
+1. **Przejęcie żądania i wybór providera w Gateway:** `APIGateway` rozpoznaje żądanie, weryfikuje uprawnienia, rozwiązuje docelowego providera według kaskady (`X-Target-Provider` → prefiks `provider/model` → profil API Key w `UserPipelineConfig`) i buduje potok przez `DynamicCoRFactory`.
+2. **Translacja na format kanoniczny i sanityzacja CoR:** Wiadomości, definicje `tools`, argumenty `tool_calls` / `tool_use` oraz wyniki `tool_result` są mapowane na format kanoniczny, a sekrety, tokeny `.env` i PII (PESEL, NIP, nazwiska) zastępowane są tokenami polimorficznymi.
+3. **Fail-Closed Gate:** W razie jakiegokolwiek błędu (np. próba użycia niedozwolonego modelu poza EOG lub niezgodny schemat `ToolCall`) zapytanie jest natychmiast odrzucane z kodem HTTP.
+4. **Wysłanie do wybranego providera:** `MultiProviderLLMDispatcher` tłumaczy format kanoniczny na natywny protokół wybranego adaptera (`LLMProviderAdapter`) i kieruje treść przez `EgressGateway` do wskazanego API (np. Mistral w Paryżu).
+5. **Streaming de-tokenizacji i `tool_calls`:** Strumień SSE odpowiedzi (oraz ewentualne wywołania `tool_calls` / `tool_use` kierowane z powrotem do agenta klienckiego lub do `ToolExecutionMiddleware`) przechodzi przez `Outbound Chain` (`OutputPIIDetectorHandler` → `WindowBufferingHandler` → `ResponseRestorer`) i jest bezpiecznie tłumaczony z powrotem na protokół klienta przez `APIGateway`.
 
 ---
 
@@ -589,8 +612,11 @@ Obowiązuje reguła **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: sur
 | **PDF** | `application/pdf` | `PyMuPDF` / `pdfplumber` | Usunięcie Info Dict, XMP, ukrytych warstw tekstowych | Domyślnie `STRICT_NO_OCR` — **natychmiastowe odrzucenie zapytania (`HardStopError`)**, jeśli dokument jest skanem. W trybie `LOCAL_OCR_ENABLED` lokalny Tesseract OCR. |
 | **DOCX / DOC** | `application/vnd.openxmlformats...` | `python-docx` / lxml parser | Usunięcie `core.xml`, komentarzy, śledzenia zmian | Ekstrakcja czystego tekstu i tabel. Wykrycie makr VBA skutkuje natychmiastowym odrzuceniem dokumentu. |
 | **XLSX / ODS** | `application/vnd.openxmlformats...spreadsheetml` | `openpyxl` (data_only=True) | Odcięcie ukrytych arkuszy, formuł zewnętrznych, stripping EXIF | Pobranie wyłącznie wyliczonych wartości komórek (ochrona przed CSV/Formula Injection). |
-| **CSV / TSV** | `text/csv`, `text/tab-separated-values` | Parser strumieniowy z walidacją dialektu | Sanityzacja prefiksów formuł (`=`, `+`, `-`, `@`) | Walidacja rozmiaru i struktury kolumnowej. |
-| **TXT / MD** | `text/plain`, `text/markdown` | Bezpośredni odczyt UTF-8 | Normalizacja kodowania, obcięcie znaków kontrolnych | Czysty tekst przekazywany bezpośrednio do detekcji PII. |
+| **CSV / TSV** | `text/csv`, `text/tab-separated-values` | Parser strumieniowy z walidacją dialektu | Sanityzacja prefiksów formuł (`=`, `+`, `-`, `@`) | Walidacja rozmiaru, kodowania UTF-8 i struktury kolumnowej; odrzucenie bajtów NUL. |
+| **JSON / JSONL (NDJSON)** | `application/json`, `application/ld+json`, `application/x-ndjson` | Parser strumieniowy JSON z limitem głębokości | Rekurencyjna ekstrakcja wartości tekstowych (i opcjonalnie kluczy), usunięcie znaków kontrolnych | Błąd składni JSON, przekroczenie limitu zagnieżdżenia lub bajty NUL → odrzucenie Fail-Closed (`UnsupportedMediaWithPotentialPIIError`, HTTP 415). |
+| **XML / HTML / XHTML / SVG** | `text/xml`, `application/xml`, `text/html`, `application/xhtml+xml`, `image/svg+xml` | Bezpieczny parser bez zewnętrznych encji (anti-XXE) | Usunięcie tagów `<script>`, `<style>`, komentarzy, deklaracji `DOCTYPE`/encji zewnętrznych oraz atrybutów wykonawczych | Wykrycie próby XXE lub błędnego kodowania skutkuje natychmiastowym odrzuceniem (`HardStopError`). |
+| **YAML / TOML / INI / ENV / Properties** | `text/yaml`, `application/x-yaml`, `application/toml`, `text/plain` (`.ini`, `.conf`, `.env`, `.properties`) | Bezpieczne parsery (`safe_load` / stdlib `tomllib` / parser liniowy) | Ekstrakcja wartości i komentarzy (mogących zawierać PII/sekrety), normalizacja UTF-8, usunięcie znaków kontrolnych | Całkowity zakaz deserializacji dowolnych obiektów (tagi YAML); błędna składnia lub dane binarne → odrzucenie Fail-Closed. |
+| **TXT / MD / RST / LOG / Kod źródłowy / inne `text/*`** | `text/plain`, `text/markdown`, `text/x-log`, `text/x-python`, `application/javascript`, `text/x-sql`, `text/vcard`, `text/calendar`, wszelkie `text/*` | Bezpośredni odczyt strumieniowy UTF-8 (z obsługą BOM) | Normalizacja kodowania i końców linii (`CRLF`→`LF`), obcięcie niebezpiecznych znaków kontrolnych ASCII | Weryfikacja anty-binarna: wykrycie bajtów `NUL` (`0x00`) lub niepoprawnego UTF-8 (np. plik binarny podszywający się pod `.txt`) kończy się odrzuceniem (`UnsupportedMediaWithPotentialPIIError`, HTTP 415). |
 | **Obrazy (PNG/JPEG)** | `image/png`, `image/jpeg` | Lokalny silnik OCR (Tesseract / EasyOCR) | Całkowity brak wysyłki pikseli na zewnątrz; stripping EXIF | Dozwolone wyłącznie w trybie `LOCAL_OCR_ENABLED`. W trybie domyślnym odrzucenie z `HardStopError`. |
 | **Archiwa (ZIP/TAR)** | `application/zip`, `application/x-tar` | Izolowany dekompresor | Ochrona przed Zip-Bomb (limit dekompresji, limit zagnieżdżenia) | Wykrycie podejrzanego pliku skutkuje przerwaniem i odrzuceniem całego archiwum. |
 
@@ -745,11 +771,13 @@ graph TD
 
     subgraph DMZ["DMZ / Edge Zone (VPC Public Subnet)"]
         LoadBalancer["🛡️ Cloud Load Balancer / WAF\n(DDoS Protection, TLS Termination)"]
-        APIGW_Pod["🚪 API Gateway Cluster\n• Native REST Endpoint (/v1/process)\n• OpenAI Compatible Endpoint (/v1/chat/completions)\n• Anthropic Messages Adapter (/v1/messages)\n• AuthN / AuthZ / Rate Limiting"]
+        APIGW_Pod["🚪 API Gateway Cluster\n• Native REST (/v1/process)\n• OpenAI (/v1/chat/completions) & Anthropic (/v1/messages)\n• Kaskada wyboru providera (Header / provider/model / API Key)\n• Translacja kanoniczna (messages, tools, tool_calls/tool_use, SSE)\n• AuthN / AuthZ / Rate Limiting"]
     end
 
     subgraph AppVPC["Trusted App Zone (VPC Private Subnet 1)"]
         CoR_Pods["⚙️ Processing Engine Pods\n(Inbound CoR + Outbound Chain: OutputPII, WindowBuffering, ResponseRestorer)"]
+        Tool_Middleware["🔧 ToolExecutionMiddleware\n(De-tokenizacja argumentów ToolCall, wykonanie narzędzi, sanitacja wyników)"]
+        Internal_Tools[("🗄️ Wewnętrzne Narzędzia / DB\n(Tylko strefa zaufana)")]
         Sandbox_Pods["📄 Sandboxed Extractor Pods\n(gVisor / nsjail, --net=none)"]
         Redis_State["🧠 Redis Cluster (TLS 1.3)\n(PipelineMemento Session Cache + RetentionWorker)"]
         Gus_DB[("🏛️ PublicDataDemographicsProvider\n(Local GUS/Eurostat Read-Only NVMe)")]
@@ -787,6 +815,10 @@ graph TD
     CoR_Pods <-->|"Extract Tasks (Brak sieci)"| Sandbox_Pods
     CoR_Pods <-->|"Session State (Memento)"| Redis_State
     CoR_Pods -.->|"Offline Reads"| Gus_DB
+    CoR_Pods <-->|"Agentic ToolCall / Sanitized ToolResult"| Tool_Middleware
+    Tool_Middleware <-->|"Dynamic Memento Expansion"| Redis_State
+    Tool_Middleware <-->|"mTLS De-tokenize / Tokenize"| Vault_Pods
+    Tool_Middleware <-->|"Zapytania na jawnych danych"| Internal_Tools
 
     CoR_Pods <-->|"mTLS Client Cert Auth (Tokenize / De-tokenize)"| Vault_Pods
     Vault_Pods --> Token_DB
@@ -832,7 +864,9 @@ Wszystkie połączenia międzystrefowe podlegają zasadzie **Default-Deny** (Kub
 | `VaultCore` | `PostgreSQL TokenDB` | PostgreSQL over TLS 1.3 / `5432` | mTLS + krótkotrwałe poświadczenia |
 | `VaultCore` | `HSM / Cloud KMS` | PKCS#11 / HTTPS (mTLS) / `443` | Certyfikat enklawy + IAM |
 | `APIGateway` / `CoR` / `VaultProxy` | `WORM Audit Storage` | HTTPS (TLS 1.3) / `443` | Uprawnienia wyłącznie `PutObject` (Append-Only) |
-| `Processing Engine Pods` | `MultiProviderLLMDispatcher` | HTTP/2 (mTLS) / `8444` | Certyfikat mTLS |
+| `Processing Engine Pods` ↔ `MultiProviderLLMDispatcher` | HTTP/2 (mTLS) / `8444` (dwukierunkowo: prompt, `tool_calls`, SSE) | Certyfikat mTLS |
+| `ToolExecutionMiddleware` ↔ `VaultProxy` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
+| `ToolExecutionMiddleware` ↔ `Internal Tools / DB` | TLS 1.3 / mTLS (wewnętrzny) | Certyfikat mTLS + izolacja `Trusted App Zone` |
 | `EgressGateway` | Zewnętrzne API LLM w EOG | HTTPS (TLS 1.3) / `443` | Allowlista domen i zakresów IP EOG |
 
 ---
