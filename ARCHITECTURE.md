@@ -75,7 +75,7 @@ flowchart TD
     DevCli["💻 Klienci CLI / Agenci (Claude Code, IDE)"]
     
     subgraph EdgeLayer["🌐 Warstwa Brzegowa (Edge Zone)"]
-        APIGW["🚪 API Gateway (Jedyny punkt wejścia)\n• Terminacja mTLS / TLS 1.3\n• AuthN (JWT / API Key) & RBAC AuthZ\n• Rate Limiting & DoS Shield\n• Endpointy: /v1/process (natywny), /v1/chat/completions (OpenAI), /v1/messages (Anthropic)"]
+        APIGW["🚪 API Gateway (Jedyny punkt wejścia)\n• Terminacja mTLS / TLS 1.3\n• AuthN (SSO OIDC/SAML, JWT, API Key) & RBAC AuthZ\n• Rate Limiting & DoS Shield\n• Wybór providera (Header / provider/model / Profil)\n• Tryby Połącz LLM & Połącz Agenta: /v1/process, /v1/chat/completions, /v1/messages"]
     end
 
     subgraph UserConfig["⚙️ Warstwa Konfiguracji Użytkownika"]
@@ -94,7 +94,7 @@ flowchart TD
     end
 
     subgraph StateAndVault["🔐 Enklawa Bezpieczeństwa (Cryptographic Enclave)"]
-        MementoMgr["🧠 PipelineMemento\n(Coreference Cluster Registry)"]
+        MementoMgr["🧠 PipelineMemento\n(Session Alias Registry)"]
         VaultProxy["🛡️ VaultProxy (Protection Proxy - jedyne proxy w systemie)"]
         VaultCore["🔑 VaultCore (AES-256-GCM)"]
         TokenDB[("🗄️ Encrypted TokenDB")]
@@ -148,8 +148,9 @@ flowchart TD
 
     LLM_Azure & LLM_Gemini & LLM_Mistral & LLM_Claude & LLM_Local -->|"Odpowiedź / Strumień SSE"| OutChain
     OutChain --> OutPII --> WinBuf --> Restorer
-    Restorer <-->|"Klastry koreferencji"| MementoMgr
+    Restorer <-->|"Mapowanie aliasów sesyjnych"| MementoMgr
     Restorer <-->|"Autoryzowana de-tokenizacja"| VaultProxy
+    AuditLog --> SIEM
     Restorer --> APIGW
     APIGW -->|"Odtworzona odpowiedź / Strumień"| Client
     APIGW -->|"Odtworzona odpowiedź w czacie"| WebUI
@@ -903,22 +904,22 @@ Wszystkie warstwy bezstanowe (`APIGateway`, `Processing Engine Pods`, `MultiProv
 
 ## 8. Decyzje architektoniczne (ADR)
 
-| ID | Tytuł decyzji | Główny wzorzec | Status | Kluczowe uzasadnienie i kompromisy |
-|:---|:---|:---|:---|:---|
-| **ADR-001** | Configurable Request Sanitization via Pure Chain of Responsibility Pattern | **Chain of Responsibility** | Accepted | Rezygnacja z Pipes & Filters na rzecz Chain of Responsibility w celu zapewnienia użytkownikowi pełnej konfigurowalności zestawu i kolejności filtrów oraz bezpośredniej obsługi *fail-closed short-circuit*. |
-| **ADR-002** | Pluggable EU-Specific PII Detectors and Anonymization Algorithms | **Strategy** | Accepted | Zgodność z OCP: dodawanie nowych detektorów dla krajów UE lub strategii maskowania/tokenizacji bez modyfikacji logiki sterującej potoku. |
-| **ADR-003** | Composing Multi-Stage Compliance Chains via Builder with Fail-Closed Invariants | **Builder** | Accepted | Walidacja spójności łańcucha na etapie kompilacji/konfiguracji (wymuszenie obecności detektorów przed anonimizacją, blokada wyłączenia zabezpieczeń dla PHI, twarde odrzucenie zapytania w razie błędu). |
-| **ADR-004** | Access-Controlled Cryptographic Vault via Protection Proxy | **Protection Proxy** | Accepted | Jedyny wzorzec Proxy w systemie: enkapsulacja `VaultCore` za pośrednictwem `VaultProxy`; rygorystyczna autoryzacja RBAC i niezmienny audyt każdej próby de-tokenizacji. |
-| **ADR-005** | State Restoration via Memento with Session-Scoped Random Aliases | **Memento** | Accepted | Jeden stały, losowy alias niesekwencyjny na czas sesji zapewnia spójność wnioskowania LLM bez narzutu re-tokenizacji, a nowy zestaw po restarcie aplikacji lub zmianie providera chroni przed korelacją międzysesyjną. |
-| **ADR-006** | Streaming Response Detokenization via Window Buffering Handler in CoR | **Streaming Handler** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE umożliwia atomową de-tokenizację placeholderów bez naruszania płynności generowania odpowiedzi. |
-| **ADR-007** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + VaultProxy** | Accepted | Przechwytywanie wywołań narzędzi, de-tokenizacja argumentów w zaufanej strefie, natychmiastowa tokenizacja wyników narzędzia i wersjonowane rozszerzanie Memento. |
-| **ADR-008** | Hybrid Unstructured PII Detection (Ensemble NER & Enhancers) | **Strategy** | Accepted | Połączenie regexów ze sprawdzaniem sum kontrolnych dla identyfikatorów PL/UE, modeli Transformer NER oraz reguł kontekstowych niwelujących *capitalization bias*. |
-| **ADR-009** | Extract-Then-Anonymize Multi-Format Document Processing (Fail-Closed) | **Fail-Closed Gate** | Accepted | Całkowity zakaz wysyłania surowych binariów do LLM; ekstrakcja czystego tekstu w piaskownicy bez dostępu do sieci; blokada i odrzucenie skanów bez lokalnego OCR. |
-| **ADR-010** | Unified Edge API Gateway with Multi-Provider Dispatcher | **Gateway + Dispatcher** | Accepted | API Gateway jako jedyny punkt wejścia na brzegu z trybami `Połącz LLM` i `Połącz Agenta`; eliminacja zbędnego proxy na wejściu; obsługa wyboru dowolnego providera LLM w EOG (Google Gemini Vertex AI EOG, ChatGPT/Azure OpenAI, Anthropic Claude, Mistral, vLLM). |
-| **ADR-011** | User-Configurable Chain Execution via Dynamic CoR Factory | **Chain of Responsibility** | Accepted | Dynamiczne składanie łańcucha ogniw w czasie uruchomienia z profilu konfiguracyjnego użytkownika (włączanie/wyłączanie filtrów, parametry, progi). |
-| **ADR-012** | Offline Public Demographic Baselines (GUS & Eurostat) for k-Anonymity | **Offline Data Provider** | Accepted | Obliczanie ryzyka k-anonimowości z wykorzystaniem lokalnie zindeksowanych rejestrów GUS/Eurostat; eliminacja zapytań sieciowych w trakcie przetwarzania promptu. |
-| **ADR-013** | Session-Scoped Random Alias Tokenization with Restart Rotation | **Memento + Strategy** | Accepted | Losowe, niesekwencyjne aliasy (`<PERSON_7a9f>`) są stałe w ramach jednej sesji (brak narzutu CPU i pełna spójność kontekstu) oraz generowane od nowa przy każdej nowej sesji po zamknięciu aplikacji lub przy zmianie providera. |
-| **ADR-014** | Multi-Format Document Ingestion in Sandboxed Environment | **Sandboxing + Strategy** | Accepted | Wsparcie dla PDF, DOCX, XLSX, CSV, obrazów (OCR) i archiwów; uruchomienie parserów w kontenerach gVisor/nsjail bez uprawnień sieciowych. |
+| ID | Tytuł decyzji | Główny wzorzec | Kluczowe uzasadnienie i kompromisy |
+|:---|:---|:---|:---|
+| **ADR-001** | Configurable Request Sanitization via Pure Chain of Responsibility Pattern | **Chain of Responsibility** | Rezygnacja z Pipes & Filters na rzecz Chain of Responsibility w celu zapewnienia użytkownikowi pełnej konfigurowalności zestawu i kolejności filtrów oraz bezpośredniej obsługi *fail-closed short-circuit*. |
+| **ADR-002** | Pluggable EU-Specific PII Detectors and Anonymization Algorithms | **Strategy** | Zgodność z OCP: dodawanie nowych detektorów dla krajów UE lub strategii maskowania/tokenizacji bez modyfikacji logiki sterującej potoku. |
+| **ADR-003** | Composing Multi-Stage Compliance Chains via Builder with Fail-Closed Invariants | **Builder** |Walidacja spójności łańcucha na etapie kompilacji/konfiguracji (wymuszenie obecności detektorów przed anonimizacją, blokada wyłączenia zabezpieczeń dla PHI, twarde odrzucenie zapytania w razie błędu). |
+| **ADR-004** | Access-Controlled Cryptographic Vault via Protection Proxy | **Protection Proxy** | Jedyny wzorzec Proxy w systemie: enkapsulacja `VaultCore` za pośrednictwem `VaultProxy`; rygorystyczna autoryzacja RBAC i niezmienny audyt każdej próby de-tokenizacji. |
+| **ADR-005** | State Restoration via Memento with Session-Scoped Random Aliases | **Memento** | Jeden stały, losowy alias niesekwencyjny na czas sesji zapewnia spójność wnioskowania LLM bez narzutu re-tokenizacji, a nowy zestaw po restarcie aplikacji lub zmianie providera chroni przed korelacją międzysesyjną. |
+| **ADR-006** | Streaming Response Detokenization via Window Buffering Handler in CoR | **Streaming Handler** | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE umożliwia atomową de-tokenizację placeholderów bez naruszania płynności generowania odpowiedzi. |
+| **ADR-007** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + VaultProxy** | Przechwytywanie wywołań narzędzi, de-tokenizacja argumentów w zaufanej strefie, natychmiastowa tokenizacja wyników narzędzia i wersjonowane rozszerzanie Memento. |
+| **ADR-008** | Hybrid Unstructured PII Detection (Ensemble NER & Enhancers) | **Strategy** | Połączenie regexów ze sprawdzaniem sum kontrolnych dla identyfikatorów PL/UE, modeli Transformer NER oraz reguł kontekstowych niwelujących *capitalization bias*. |
+| **ADR-009** | Extract-Then-Anonymize Multi-Format Document Processing (Fail-Closed) | **Fail-Closed Gate** |Całkowity zakaz wysyłania surowych binariów do LLM; ekstrakcja czystego tekstu w piaskownicy bez dostępu do sieci; blokada i odrzucenie skanów bez lokalnego OCR. |
+| **ADR-010** | Unified Edge API Gateway with Multi-Provider Dispatcher | **Gateway + Dispatcher** | API Gateway jako jedyny punkt wejścia na brzegu z trybami `Połącz LLM` i `Połącz Agenta`; eliminacja zbędnego proxy na wejściu; obsługa wyboru dowolnego providera LLM w EOG (Google Gemini Vertex AI EOG, ChatGPT/Azure OpenAI, Anthropic Claude, Mistral, vLLM). |
+| **ADR-011** | User-Configurable Chain Execution via Dynamic CoR Factory | **Chain of Responsibility** | Dynamiczne składanie łańcucha ogniw w czasie uruchomienia z profilu konfiguracyjnego użytkownika (włączanie/wyłączanie filtrów, parametry, progi). |
+| **ADR-012** | Offline Public Demographic Baselines (GUS & Eurostat) for k-Anonymity | **Offline Data Provider** | Obliczanie ryzyka k-anonimowości z wykorzystaniem lokalnie zindeksowanych rejestrów GUS/Eurostat; eliminacja zapytań sieciowych w trakcie przetwarzania promptu. |
+| **ADR-013** | Session-Scoped Random Alias Tokenization with Restart Rotation | **Memento + Strategy** | Losowe, niesekwencyjne aliasy (`<PERSON_7a9f>`) są stałe w ramach jednej sesji (brak narzutu CPU i pełna spójność kontekstu) oraz generowane od nowa przy każdej nowej sesji po zamknięciu aplikacji lub przy zmianie providera. |
+| **ADR-014** | Multi-Format Document Ingestion in Sandboxed Environment | **Sandboxing + Strategy** | Wsparcie dla PDF, DOCX, XLSX, CSV, obrazów (OCR) i archiwów; uruchomienie parserów w kontenerach gVisor/nsjail bez uprawnień sieciowych. |
 
 ---
 
