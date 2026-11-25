@@ -1,7 +1,7 @@
 # Privacy-Preserving Context Pipeline for LLMs — Analiza Architektury
 
-> **Wersja:** 1.0 · **Data:** 2026-10-25  
-> **Kontekst:** Projekt akademicki / badawczy — dogłębna analiza wzorców projektowych, bezpieczeństwa i zgodności regulacyjnej
+> **Wersja:** 2.4 · **Data:** 2026-11-24  
+> **Kontekst:** Projekt akademicki / badawczy — dogłębna analiza wzorców projektowych, bezpieczeństwa, integracji wielomodelowej (Multi-Provider Dispatcher) i zgodności regulacyjnej w Unii Europejskiej (GDPR, EU AI Act, eIDAS)
 
 ---
 
@@ -10,924 +10,890 @@
 1. [Cel i kontekst projektu](#1-cel-i-kontekst-projektu)
 2. [Widok wysokiego poziomu](#2-widok-wysokiego-poziomu)
 3. [Wzorce projektowe i ich zastosowanie](#3-wzorce-projektowe-i-ich-zastosowanie)
-   - 3.1 [Pipes & Filters](#31-pipes--filters)
-   - 3.2 [Strategy (maskowanie, tokenizacja, generalizacja)](#32-strategy)
-   - 3.3 [Builder](#33-builder)
-   - 3.4 [Proxy (Tokenization Vault)](#34-proxy--tokenization-vault)
-   - 3.5 [Memento](#35-memento)
+   - 3.1 [Chain of Responsibility — W pełni konfigurowalny łańcuch przetwarzania](#31-chain-of-responsibility--w-pełni-konfigurowalny-łańcuch-przetwarzania)
+   - 3.2 [Strategy (detektory UE, algorytmy anonimizacji, ekstrakcja dokumentów)](#32-strategy)
+   - 3.3 [Builder i Dynamic CoR Factory (walidacja niezmienników i polityka Fail-Closed)](#33-builder)
+   - 3.4 [API Gateway na brzegu oraz Protection Proxy w Vault (eliminacja zbędnego proxy)](#34-api-gateway-na-brzegu-oraz-protection-proxy-w-vault)
+   - 3.5 [Memento i Outbound Chain (polimorficzna tokenizacja, SSE streaming)](#35-memento)
+   - 3.6 [Wielomodelowa integracja (Multi-Provider Dispatcher) i elastyczny wybór providera LLM](#36-wielomodelowa-integracja-multi-provider-dispatcher-i-elastyczny-wybór-providera-llm)
 4. [Komponenty systemu](#4-komponenty-systemu)
 5. [Scenariusze użycia — szczegółowa analiza](#5-scenariusze-użycia)
-   - 5.1 [Pseudonimizacja (happy path)](#51-pseudonimizacja--happy-path)
-   - 5.2 [Nieautoryzowana de-tokenizacja](#52-nieautoryzowana-de-tokenizacja)
-   - 5.3 [Residency danych — blokada](#53-data-residency--blokada)
-   - 5.4 [Re-identyfikacja — k-anonimowość](#54-re-identyfikacja--k-anonimowość)
-   - 5.5 [Rotacja kluczy](#55-rotacja-kluczy)
-   - 5.6 [Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)](#57-anonymized-agentic-tool-calling-scenariusz-odpytania-bazy-danych)
-6. [Model bezpieczeństwa](#6-model-bezpieczeństwa)
-   - 6.1 [Wykrywanie PII/PHI](#61-wykrywanie-piiphi)
-   - 6.2 [GDPR i EU AI Act](#62-gdpr-i-eu-ai-act)
-   - 6.3 [Zarządzanie kluczami](#63-zarządzanie-kluczami)
-   - 6.4 [Ryzyko re-identyfikacji](#64-ryzyko-re-identyfikacji)
-   - 6.5 [Data residency](#65-data-residency)
-   - 6.6 [Audyt de-tokenizacji](#66-audyt-de-tokenizacji)
-7. [Decyzje architektoniczne (ADR)](#7-decyzje-architektoniczne-adr)
-8. [Ryzyka i otwarte pytania](#8-ryzyka-i-otwarte-pytania)
+   - 5.1 [Pseudonimizacja polimorficzna (happy path)](#51-pseudonimizacja-polimorficzna--happy-path)
+   - 5.2 [Nieautoryzowana de-tokenizacja — natychmiastowe odrzucenie](#52-nieautoryzowana-de-tokenizacja--natychmiastowe-odrzucenie)
+   - 5.3 [Residency danych w EOG — blokada i odrzucenie zapytania](#53-residency-danych-w-eog--blokada-i-odrzucenie-zapytania)
+   - 5.4 [Re-identyfikacja — k-anonimowość z danymi publicznymi (GUS, Eurostat)](#54-re-identyfikacja--k-anonimowość-z-danymi-publicznymi-gus-eurostat)
+   - 5.5 [Rotacja kluczy kryptograficznych](#55-rotacja-kluczy-kryptograficznych)
+   - 5.6 [Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)](#56-anonymized-agentic-tool-calling-scenariusz-odpytania-bazy-danych)
+   - 5.7 [Wybór providera LLM przez API i obsługa narzędzi deweloperskich](#57-wybór-providera-llm-przez-api-i-obsługa-narzędzi-deweloperskich)
+6. [Model bezpieczeństwa i przetwarzania danych w Unii Europejskiej](#6-model-bezpieczeństwa-i-przetwarzania-danych-w-unii-europejskiej)
+   - 6.1 [Wieloformatowa ekstrakcja dokumentów (Extract-Then-Anonymize)](#61-wieloformatowa-ekstrakcja-dokumentów-extract-then-anonymize)
+   - 6.2 [Wykrywanie PII/PHI specyficznych dla Polski i Unii Europejskiej](#62-wykrywanie-piiphi-specyficznych-dla-polski-i-unii-europejskiej)
+   - 6.3 [Polityka Fail-Closed — Bezwarunkowe odrzucenie zapytania w razie problemu](#63-polityka-fail-closed--bezwarunkowe-odrzucenie-zapytania-w-razie-problemu)
+   - 6.4 [GDPR i EU AI Act](#64-gdpr-i-eu-ai-act)
+   - 6.5 [Zarządzanie kluczami i kryptografia](#65-zarządzanie-kluczami-i-kryptografia)
+   - 6.6 [Szacowanie k-anonimowości w oparciu o bazy GUS i Eurostat (Offline Baseline)](#66-szacowanie-k-anonimowości-w-oparciu-o-bazy-gus-i-eurostat-offline-baseline)
+   - 6.7 [Data residency w EOG — model decyzyjny](#67-data-residency-w-eog--model-decyzyjny)
+   - 6.8 [Audyt kryptograficzny i WORM](#68-audyt-kryptograficzny-i-worm)
+7. [Architektura fizyczna i wdrożeniowa](#7-architektura-fizyczna-i-wdrożeniowa)
+   - 7.1 [Strefy bezpieczeństwa sieciowego (Zero Trust Network Architecture)](#71-strefy-bezpieczeństwa-sieciowego)
+   - 7.2 [Diagram architektury fizycznej (Deployment Topology)](#72-diagram-architektury-fizycznej)
+   - 7.3 [Izolacja procesowa i sandboxing parserów](#73-izolacja-procesowa-i-sandboxing-parserów)
+   - 7.4 [Macierz komunikacji sieciowej (porty i protokoły)](#74-macierz-komunikacji-sieciowej-porty-i-protokoły)
+   - 7.5 [Wysoka dostępność (HA) i zachowanie Fail-Closed przy awarii](#75-wysoka-dostępność-ha-i-zachowanie-fail-closed-przy-awarii)
+8. [Decyzje architektoniczne (ADR)](#8-decyzje-architektoniczne-adr)
+9. [Ryzyka i otwarte pytania](#9-ryzyka-i-otwarte-pytania)
 
 ---
 
 ## 1. Cel i kontekst projektu
 
-Celem systemu jest stworzenie **warstwy pośredniej** (middleware) między aplikacją kliencką a zewnętrznymi modelami językowymi (LLM), która:
+Celem systemu jest stworzenie **bezpiecznej, w pełni konfigurowalnej przez użytkownika warstwy pośredniej (Security & Privacy Middleware)** operującej w reżimie prawnym **Unii Europejskiej (RODO / GDPR, EU AI Act, eIDAS)** między środowiskami klienckimi (aplikacje biznesowe, agenci programistyczni, skrypty, potoki ETL) a zewnętrznymi lub lokalnymi modelami językowymi (LLM), która:
 
-- **wykrywa** dane osobowe (PII) i wrażliwe (PHI) w tekście wejściowym,
-- **anonimizuje lub pseudonimizuje** je przed wysłaniem do LLM,
-- **przywraca** oryginalne wartości w odpowiedzi — tylko dla uprawnionych podmiotów,
-- **rejestruje** każdą operację de-tokenizacji w niezmiennym logu audytowym,
-- **blokuje** przepływ danych niezgodny z politykami residency lub uprawnieniami.
+- **przyjmuje ruch na brzegu sieci wyłącznie przez API Gateway**, realizujący uwierzytelnienie (mTLS, JWT), autoryzację (RBAC/ABAC), inspekcję, rate limiting oraz bezpośrednią adaptację protokołów zewnętrznych (eliminując jakiekolwiek zbędne proxy wejściowe),
+- **realizuje elastyczny wybór docelowego providera LLM (Multi-Provider Dispatcher)** — system nie narzuca sztywno żadnego pojedynczego dostawcy modelu; klient w parametrach żądania lub konfiguracji wskazuje, z jakim providerem w EOG chce się komunikować (np. Azure OpenAI EU, Anthropic Claude EU, Mistral AI w Paryżu, czy lokalne instancje vLLM/Ollama on-premise),
+- **udostępnia uniwersalne interfejsy API (w tym adaptery dla narzędzi deweloperskich)** — transparentnie obsługuje aplikacje webowe, biblioteki OpenAI/Anthropic SDK oraz agentów CLI (takich jak Claude Code) bez modyfikacji ich kodu,
+- **bezwzględnie odrzuca zapytanie w razie wykrycia problemu (Polityka Fail-Closed)** — każde naruszenie reguł rezydencji danych, błąd parsowania nieobsługiwanego formatu, przekroczenie progu ryzyka re-identyfikacji czy błąd integralności skutkuje natychmiastowym przerwaniem potoku z kodem błędu HTTP i rejestracją w audycie (zero wycieku, zero zgadywania),
+- **umożliwia użytkownikom dynamiczną konfigurację filtrów i detektorów w oparciu o Chain of Responsibility budowany przez Builder** — użytkownik decyduje o zestawie aktywnych filtrów, progach i strategiach, a `PipelineBuilder` waliduje nienaruszalność reguł bezpieczeństwa (Privacy by Design),
+- **wykrywa dane osobowe i identyfikatory obowiązujące w Polsce i UE** (PESEL, NIP, REGON, dowody osobiste, paszporty UE, unijne numery IBAN z walidacją Modulo-97, numery VAT-UE/TIN, karty EKUZ/EHIC, polskie i europejskie dane medyczne) z całkowitym pominięciem obcych formatów pozaeuropejskich,
+- **bezpiecznie ekstrahuje treść z szerokiego wachlarza formatów plików** (PDF, DOCX, XLSX, CSV, obrazy ze skanami via kontrolowany OCR, archiwa) w trybie *Extract-Then-Anonymize*, uniemożliwiając wyciek surowych binariów do LLM,
+- **dynamicznie i polimorficznie pseudonimizuje dane** — wielokrotne wystąpienia tego samego podmiotu otrzymują unikalne, niepowiązane na zewnątrz tokeny, zachowując jednocześnie kohezję i koreferencję semantyczną dla wnioskowania LLM dzięki wzorcowi Memento,
+- **analizuje ryzyko re-identyfikacji (k-anonimowość)** z wykorzystaniem zintegrowanych lokalnie, zindeksowanych rejestrów danych publicznych (GUS, Eurostat) w trybie *Zero-Network-Call Runtime*,
+- **gwarantuje separację kryptograficzną i niezmienny audyt (Protection Proxy w Vault)** z wykorzystaniem AES-256-GCM, rotacji kluczy w KMS i logu WORM.
 
-System musi spełniać wymagania **RODO (GDPR)** oraz **EU AI Act** (szczególnie art. 9 dotyczące systemów wysokiego ryzyka przetwarzających dane wrażliwe).
+System gwarantuje, że dane podlegające RODO nie opuszczą Europejskiego Obszaru Gospodarczego (EOG).
 
 ---
 
 ## 2. Widok wysokiego poziomu
 
+Architektura systemu rozdziela wejście brzegowe (API Gateway), konfigurowalny łańcuch CoR, dyspozytora modeli w EOG oraz enklawę kryptograficzną z VaultProxy:
+
 ```mermaid
 flowchart TD
-    Client["🖥️ Aplikacja kliencka"]
-    PipelineProxy["🛡️ Pipeline Proxy\n(wzorzec Proxy)"]
-    InboundPipeline["⚙️ Inbound Pipeline\n(Pipes & Filters)"]
-    Vault["🔐 Tokenization Vault\n(Proxy + Memento)"]
-    ResidencyPolicyFilter["🌍 Residency Gate\nPolicy Engine"]
-    ExtLLM["🤖 Zewnętrzny LLM\n(OpenAI / Anthropic / ...)"]
-    OutboundPipeline["⚙️ Outbound Pipeline\n(Pipes & Filters)"]
-    AuditLog["📋 Immutable Audit Log"]
-    KeyManagement["🗝️ Key Management Service\n(KMS)"]
+    Client["🖥️ Klienci: Aplikacje webowe / SDK"]
+    DevCli["💻 Klienci CLI / Agenci (Claude Code, IDE)"]
+    
+    subgraph EdgeLayer["🌐 Warstwa Brzegowa (Edge Zone)"]
+        APIGW["🚪 API Gateway (Jedyny punkt wejścia)\n• Terminacja mTLS / TLS 1.3\n• AuthN (JWT / API Key) & RBAC AuthZ\n• Rate Limiting & DoS Shield\n• Endpointy: /v1/process (natywny), /v1/chat/completions (OpenAI), /v1/messages (Anthropic)"]
+    end
 
-    Client -->|"zapytanie z PII"| PipelineProxy
-    PipelineProxy --> InboundPipeline
+    subgraph UserConfig["⚙️ Warstwa Konfiguracji Użytkownika"]
+        ConfigMgr["🎛️ User Chain Configuration\n(Wybór filtrów, detektorów, progów i docelowego LLM)"]
+    end
 
-    InboundPipeline -->|"wykrywanie PII"| D1["🔍 PIIDetectorFilter"]
-    D1 -->|"strategia maskowania"| D2["🎭 AnonymizationFilter\n(Strategy)"]
-    D2 -->|"ocena ryzyka re-ID"| D3["📊 RiskAssessmentFilter"]
-    D3 -->|"weryfikacja residency"| ResidencyPolicyFilter
+    subgraph PipelineCore["⚙️ Łańcuch Przetwarzania (Chain of Responsibility)"]
+        CoRPipeline["🔗 Konfigurowalny Łańcuch Ogniw CoR (składany przez Builder)"]
+        MultiDoc["📄 DocumentExtractorHandler\n(PDF, DOCX, XLSX, CSV, OCR)"]
+        LangHandler["🌐 LanguageDetectorHandler"]
+        PIIHandler["🔍 PIIDetectorHandler\n(Dobór detektorów ze Strategy)"]
+        RiskHandler["📊 RiskAssessmentHandler\n(k-Anonymity + GUS/Eurostat)"]
+        AnonHandler["🎭 AnonymizationHandler\n(Polymorphic Tokenization)"]
+        ResidencyHandler["🌍 ResidencyPolicyHandler\n(Strict EEA Geo-Fence Gate)"]
+        AuditHandler["📋 AuditContextHandler"]
+    end
 
-    ResidencyPolicyFilter -->|"blokada jeśli naruszenie"| AuditLog
-    ResidencyPolicyFilter -->|"dozwolone"| ExtLLM
+    subgraph StateAndVault["🔐 Enklawa Bezpieczeństwa (Cryptographic Enclave)"]
+        MementoMgr["🧠 PipelineMemento\n(Coreference Cluster Registry)"]
+        VaultProxy["🛡️ VaultProxy (Protection Proxy - jedyne proxy w systemie)"]
+        VaultCore["🔑 VaultCore (AES-256-GCM)"]
+        TokenDB[("🗄️ Encrypted TokenDB")]
+        KMS["🗝️ Key Management Service (KMS)"]
+    end
 
-    ExtLLM -->|"odpowiedź z tokenami"| OutboundPipeline
-    OutboundPipeline -->|"OutputPIIDetector: skan przed de-tokenizacją"| Vault
-    Vault -->|"żądanie klucza"| KeyManagement
-    Vault -->|"log de-tokenizacji"| AuditLog
-    Vault -->|"przywrócone PII"| PipelineProxy
-    PipelineProxy -->|"odpowiedź dla uprawnionego"| Client
+    subgraph DispatcherAndLLM["🤖 Dyspozytor Modeli (Egress Zone)"]
+        Dispatcher["🔀 MultiProviderLLMDispatcher\n(Wybór providera w EOG zdefiniowanego w żądaniu)"]
+        EgressGW["🚪 EgressGateway (Strict EEA Geo-Fence)"]
+        LLM_Azure["☁️ Azure OpenAI (Region EU)"]
+        LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
+        LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
+        LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
+    end
 
-    style Vault fill:#ffd6a5,stroke:#e07a00
-    style ResidencyPolicyFilter fill:#d0f0c0,stroke:#2d6a4f
-    style AuditLog fill:#e8d5f5,stroke:#6a2d8f
-    style KeyManagement fill:#ffd6d6,stroke:#8f2d2d
+    subgraph OutboundCore["⚙️ Łańcuch Rekonstrukcji (Outbound Chain)"]
+        OutChain["🔗 Outbound Chain (Chain of Responsibility)"]
+        OutPII["🔍 OutputPIIDetectorHandler\n(Wykrywanie wycieków PII z LLM)"]
+        WinBuf["🪟 WindowBufferingHandler\n(Buforowanie okien <...> w SSE)"]
+        Restorer["🔓 ResponseRestorer (Memento + VaultProxy)"]
+    end
+
+    subgraph AuditZone["📜 Warstwa Zgodności (Compliance Zone)"]
+        AuditLog["📋 Append-Only WORM Audit Log (Hash-Chained)"]
+        SIEM["🚨 SIEM / SOC Alerting"]
+    end
+
+    Client -->|"Natywne żądanie REST"| APIGW
+    DevCli -->|"Żądanie CLI / API"| APIGW
+    
+    ConfigMgr -.->|"DynamicCoRFactory + PipelineBuilder"| CoRPipeline
+
+    APIGW -->|"Ustandaryzowany PipelineContext"| CoRPipeline
+    APIGW -.->|"Audit odrzuceń AuthN/AuthZ"| AuditLog
+    CoRPipeline --> MultiDoc --> LangHandler --> PIIHandler --> RiskHandler --> AnonHandler --> ResidencyHandler --> AuditHandler
+
+    CoRPipeline -.->|"Błąd / Naruszenie: FAIL-CLOSED REJECT"| AuditLog
+    CoRPipeline -.->|"Odrzucenie z kodem błędu HTTP"| APIGW
+
+    AnonHandler <-->|"Rejestracja tokenów & klastrów"| MementoMgr
+    AnonHandler <-->|"Szyfrowanie wartości PII"| VaultProxy
+    VaultProxy --> VaultCore --> TokenDB
+    VaultCore <--> KMS
+    VaultProxy -.->|"Audit każdego dostępu"| AuditLog
+
+    AuditHandler --> Dispatcher
+    Dispatcher --> EgressGW
+    EgressGW --> LLM_Azure & LLM_Mistral & LLM_Claude & LLM_Local
+
+    LLM_Azure & LLM_Mistral & LLM_Claude & LLM_Local -->|"Odpowiedź / Strumień SSE"| OutChain
+    OutChain --> OutPII --> WinBuf --> Restorer
+    Restorer <-->|"Klastry koreferencji"| MementoMgr
+    Restorer <-->|"Autoryzowana de-tokenizacja"| VaultProxy
+    Restorer --> APIGW
+    APIGW -->|"Odtworzona odpowiedź / Strumień"| Client
+    APIGW -->|"Odtworzony strumień SSE"| DevCli
+
+    style EdgeLayer fill:#e1f5fe,stroke:#0288d1
+    style UserConfig fill:#e8eaf6,stroke:#3f51b5
+    style StateAndVault fill:#fff3e0,stroke:#f57c00
+    style AuditZone fill:#f3e5f5,stroke:#7b1fa2
+    style DispatcherAndLLM fill:#e8f5e9,stroke:#388e3c
 ```
-
-### Kluczowe zasady projektu
-
-| Zasada | Realizacja |
-|--------|-----------|
-| **Minimalizacja danych** | Tylko niezbędne atrybuty PII trafiają do Vault; reszta jest usuwana |
-| **Privacy by Design** | Anonimizacja jest pierwszym krokiem pipeline'u, nie ostatnim |
-| **Separation of Concerns** | Każdy filtr ma jedną odpowiedzialność |
-| **Zero Trust** | Każde żądanie de-tokenizacji wymaga jawnego uwierzytelnienia i autoryzacji |
-| **Audit Everything** | Wszystkie operacje na tokenach są logowane niezależnie od powodzenia |
 
 ---
 
 ## 3. Wzorce projektowe i ich zastosowanie
 
-### 3.1 Pipes & Filters
+### 3.1 Chain of Responsibility — W pełni konfigurowalny łańcuch przetwarzania
 
-**Rola:** Główna struktura pipeline'u przetwarzania tekstu.
+#### Istota wzorca w systemie
+Wzorzec **Chain of Responsibility (CoR)** jest jedynym wzorcem sterującym przepływem przetwarzania żądania. Każdy krok w potoku jest reprezentowany przez autonomiczny obiekt `FilterHandler`. Ogniwa nie komunikują się przez żadne pośrednie "rury" ani kolejki — przetwarzanie zachodzi synchronicznie w pamięci RAM poprzez przekazywanie niemutowalnego obiektu `PipelineContext`.
 
-Każdy filtr jest niezależną jednostką przetwarzającą, która konsumuje `PipelineContext` i zwraca zmodyfikowany `PipelineContext`. Filtry mogą:
-- **przepuszczać** dane bez zmian (pass-through),
-- **transformować** dane (anonimizacja),
-- **wzbogacać** dane (metadane, ryzyko),
-- **blokować** przepływ (hard-stop z audytem).
+Każde ogniwo łańcucha:
+1. **Weryfikuje konfigurację użytkownika:** Sprawdza, czy dane ogniwo zostało włączone w wybranym profilu. Jeśli nie — natychmiast deleguje zadanie do następnika (`return self._next.handle(context)`).
+2. **Wykonuje operację domenową:** Wykrywa PII, ekstrahuje dokument, ocenia k-anonimowość lub tokenizuje dane.
+3. **Realizuje natychmiastowe odrzucenie zapytania (Fail-Closed Short-Circuit):** Jeśli wystąpi jakiekolwiek naruszenie reguły bezpieczeństwa (np. wykrycie skanu bez OCR, próba transferu danych poza EOG, błąd integralności), ogniwo **natychmiast rzuca wyjątek domenowy**, zatrzymując cały łańcuch.
+4. **Deleguje do następnika:** W przypadku pomyślnego wykonania krok przekazuje zaktualizowany `PipelineContext` do `self._next.handle(updated_context)`.
 
-```mermaid
-flowchart LR
-    IN["📥 Wejście\n(tekst / PDF / ToolCall)"] --> F0
-    F0["📄 DocumentExtractor\nFilter (PDF → tekst)"] --> F1
-    F1["🔍 LanguageDetector\nFilter"] --> F2
-    F2["🔍 PIIDetector\nFilter"] --> F3
-    F3["📊 RiskAssessment\nFilter"] --> F4
-    F4["🎭 Anonymization\nFilter"] --> F5
-    F5["🌍 ResidencyPolicyFilter"] --> F6
-    F6["📋 AuditContext\nFilter"] --> OUT["📤 Wyjście\n(zanonimizowany tekst)"]
+```python
+class FilterHandler(Protocol):
+    @property
+    def is_enabled(self) -> bool: ...
+    def set_next(self, handler: FilterHandler) -> FilterHandler: ...
+    def handle(self, context: PipelineContext) -> PipelineContext: ...
 
-    LLM["🤖 Odpowiedź LLM\n(z tokenami)"] --> OF1
-    OF1["🔍 OutputPIIDetector\nFilter"] --> OF2["🔐 ResponseRestorer\n(Memento + Vault)"]
-    OF2 --> OOUT["📤 Odpowiedź\n(po kontroli PII)"]
+class BaseFilterHandler(ABC):
+    def __init__(self, enabled: bool = True) -> None:
+        self._next_handler: FilterHandler | None = None
+        self._enabled: bool = enabled
 
-    style F0 fill:#e8f8f5,stroke:#117a65
-    style F2 fill:#fff3cd,stroke:#d4a017
-    style F4 fill:#d0f0c0,stroke:#2d6a4f
-    style F5 fill:#d6eaf8,stroke:#1a5276
-    style OF1 fill:#fff3cd,stroke:#d4a017
-    style OF2 fill:#ffd6a5,stroke:#e07a00
-```
+    @property
+    def is_enabled(self) -> bool:
+        return self._enabled
 
-Na wejściu `Inbound Pipeline` opcjonalny `DocumentExtractorFilter` przechwytuje załączniki dokumentowe (np. pliki PDF), odrzuca metadane binarne (XMP / Info Dictionary) i ekstrahuje czystą warstwę tekstową przed przekazaniem jej do `LanguageDetectorFilter`. Surowe pliki binarne nigdy nie opuszczają pipeline'u, a dokumenty zawierające skany lub osadzone obrazy bez skonfigurowanego lokalnego OCR są zatrzymywane w trybie fail-closed (`HardStopError`).
+    def set_next(self, handler: FilterHandler) -> FilterHandler:
+        self._next_handler = handler
+        return handler
 
-Outbound Pipeline zawiera `OutputPIIDetector`, uruchamiany przed `ResponseRestorer`, de-tokenizacją oraz odwróceniem Memento. Filtr analizuje także odpowiedzi częściowe i może wykonać hard-stop, redakcję lub przekazać wynik do audytu, zanim jakakolwiek wartość zostanie przywrócona z Vault.
+    def handle(self, context: PipelineContext) -> PipelineContext:
+        if not self._enabled:
+            return self._pass_to_next(context)
+        
+        # Wykonanie logiki ogniwa z możliwością rzucenia błędu Fail-Closed
+        updated_context = self._process(context)
+        return self._pass_to_next(updated_context)
 
-**Kluczowe właściwości:**
+    def _pass_to_next(self, context: PipelineContext) -> PipelineContext:
+        if self._next_handler is not None:
+            return self._next_handler.handle(context)
+        return context
 
-- **Kolejność filtrów jest deterministyczna** — `LanguageDetectorFilter` musi działać przed `PIIDetectorFilter`, bo reguły wykrywania PESEL różnią się od SSN.
-- **Short-circuit semantics** — filtr `ResidencyPolicyFilter` może przerwać łańcuch i zwrócić błąd bez dalszego przetwarzania.
-- **Konfigurowalne łańcuchy** — `PipelineBuilder` (patrz §3.3) pozwala składać różne łańcuchy dla różnych kontekstów (np. pipeline dla danych medycznych vs. finansowych).
-
-```
-interface Filter {
-    process(context: PipelineContext): PipelineContext | HardStopError
-}
-
-interface Pipe {
-    add_filter(filter: Filter): Pipe
-    execute(context: PipelineContext): PipelineContext
-}
+    @abstractmethod
+    def _process(self, context: PipelineContext) -> PipelineContext:
+        """Logika konkretnego filtra. W razie problemu rzuca wyjątek przerywający łańcuch."""
+        pass
 ```
 
 ---
 
 ### 3.2 Strategy
 
-**Rola:** Wymienne algorytmy anonimizacji / pseudonimizacji dla każdego typu PII.
+**Rola:** Wymienne algorytmy dobierane dynamicznie na podstawie konfiguracji użytkownika (zgodność z zasadą Open-Closed — dodanie nowej strategii nie wymaga modyfikacji ogniw CoR):
+1. **Detektory PII/PHI dla UE (`PIIDetector`):** `RegexPIIDetector` (dla PESEL, NIP, REGON, dowodów osobistych, paszportów, unijnych IBAN Modulo-97, VAT-UE/TIN, kart EKUZ, kart płatniczych Luhn), `TransformerNERDetector` (HerBERT, RoBERTa/GLiNER), `ContextRuleEnhancer`.
+2. **Strategie ochrony (`AnonymizationStrategy`):** `TokenizationStrategy` (odwracalna, powiązana z `VaultProxy`), `MaskingStrategy` (nieodwracalna), `GeneralizationStrategy` (uogólnianie cech w oparciu o `PublicDataDemographicsProvider` — bazy GUS/Eurostat), `SynthesisStrategy` (podstawianie realistycznych danych syntetycznych). Dobór strategii realizuje `StrategySelector`.
+3. **Ekstrakcja dokumentów (`DocumentExtractorStrategy`):** Dedykowane silniki parsowania dla PDF, DOCX, XLSX/CSV, obrazów (OCR) oraz archiwów, wywoływane przez `DocumentExtractorHandler`.
+4. **Adaptery modeli LLM (`LLMProviderAdapter`):** Wymienne strategie komunikacji z API wybranego dostawcy (Azure OpenAI EU, Mistral AI, Anthropic Claude EOG, vLLM/Ollama), wywoływane przez `MultiProviderLLMDispatcher`.
 
-Wzorzec Strategy pozwala dodawać nowe metody ochrony **bez modyfikacji** `AnonymizationFilter`. Filtr deleguje decyzję do `AnonymizationStrategy`, wybieranej przez `StrategySelector` na podstawie:
-- **typu encji** (PERSON, PESEL, IBAN, EMAIL, ...),
-- **kontekstu** (dane medyczne → silniejsza ochrona),
-- **polityki organizacyjnej**.
+```python
+class PIIDetector(Protocol):
+    def detect(self, text: str, language: str) -> Sequence[DetectedEntity]: ...
 
-```mermaid
-classDiagram
-    class AnonymizationFilter {
-        -strategy_selector: StrategySelector
-        +process(ctx: PipelineContext) PipelineContext
-    }
-    class StrategySelector {
-        +select(entity: DetectedEntity, policy: Policy) AnonymizationStrategy
-    }
-    class AnonymizationStrategy {
-        <<interface>>
-        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
-        +can_reverse() bool
-    }
-    class TokenizationStrategy {
-        -vault: TokenizationVault
-        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
-        +can_reverse() bool
-    }
-    class MaskingStrategy {
-        -mask_char: char
-        -preserve_length: bool
-        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
-        +can_reverse() bool
-    }
-    class GeneralizationStrategy {
-        -k_min: int
-        -hierarchy: GeneralizationHierarchy
-        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
-        +can_reverse() bool
-    }
-    class SynthesisStrategy {
-        -synthetic_data_generator: Generator
-        -mapping_store: PipelineMemento
-        +anonymize(entity: DetectedEntity, context: AnonymizationRequest) AnonymizationResult
-        +can_reverse() bool
-    }
+class AnonymizationStrategy(Protocol):
+    def anonymize(self, entity: DetectedEntity, request: AnonymizationRequest) -> AnonymizationResult: ...
+    def can_reverse(self) -> bool: ...
 
-    AnonymizationFilter --> StrategySelector
-    AnonymizationFilter --> AnonymizationStrategy
-    AnonymizationStrategy <|.. TokenizationStrategy
-    AnonymizationStrategy <|.. MaskingStrategy
-    AnonymizationStrategy <|.. GeneralizationStrategy
-    AnonymizationStrategy <|.. SynthesisStrategy
-    TokenizationStrategy --> TokenizationVault
-    SynthesisStrategy --> TokenizationVault
+class DocumentExtractorStrategy(Protocol):
+    def supports(self, mime_type: str) -> bool: ...
+    def extract(self, attachment: DocumentAttachment) -> ExtractedDocument: ...
+
+class LLMProviderAdapter(Protocol):
+    @property
+    def endpoint_metadata(self) -> EndpointMetadata: ...
+    def invoke(self, sanitized_prompt: str, params: dict[str, Any]) -> LLMResponse: ...
 ```
-
-| Strategia | Odwracalna | Zastosowanie | Przykład |
-|-----------|-----------|--------------|---------|
-| **Tokenizacja** | ✅ Tak | Pseudonimizacja wymagająca przywrócenia | `Jan Kowalski` → `<PERSON_1>` |
-| **Maskowanie** | ❌ Nie | Dane nieistotne dla kontekstu LLM | `90010112345` → `***********` |
-| **Generalizacja** | ❌ Nie | Quasi-identyfikatory, k-anonimowość | `wiek: 34, Sępólno Krajeńskie` → `wiek: 30–40, Polska` |
-| **Synteza** | ✅ Tak* | Opcjonalny fallback, gdy LLM odmawia placeholderów | `Jan Kowalski` → `Piotr Wiśniewski` (syntetyczna) |
-
-`SynthesisStrategy` jest opcjonalnym rozwiązaniem dla modeli, które odmawiają odpowiedzi po napotkaniu surowych tokenów typu `<PERSON_1>`. Zastępuje realne PII realistycznymi danymi syntetycznymi, zachowując strukturę i kontekst wypowiedzi. `Vault`/`Memento` utrzymuje dwukierunkowe mapowanie **syntetyk ↔ oryginał**, dzięki czemu odpowiedź może zostać bezpiecznie odtworzona dla uprawnionego odbiorcy; strategia nie przechowuje oryginału poza zaszyfrowanym Vaultem.
 
 ---
 
 ### 3.3 Builder
 
-**Rola:** Budowanie skonfigurowanego pipeline'u krok po kroku, z walidacją spójności.
+**Rola:** Składanie łańcucha ogniw z konfiguracji użytkownika (`UserPipelineConfig`) za pośrednictwem `DynamicCoRFactory` i `PipelineBuilder` oraz **bezwzględna walidacja niezmienników i polityki Fail-Closed**:
+- **Budowa powiązań:** `PipelineBuilder` łączy zarejestrowane instancje `FilterHandler` za pomocą `set_next()`, zwracając głowę łańcucha (`head`).
+- **Weryfikacja Privacy by Design:** `PipelineBuilder` sprawdza nie tylko obecność, ale też **aktywność (`is_enabled`)** kluczowych ogniw. Dla `DataClass.MEDICAL` aktywne ogniwa `AnonymizationHandler`, `ResidencyPolicyHandler` oraz `AuditContextHandler` są obowiązkowe — próba ich wyłączenia kończy się błędem `PipelineConfigurationError`.
+- **Wymóg kolejności logicznej:** `PIIDetectorHandler` musi poprzedzać `AnonymizationHandler`, a aktywny `ResidencyPolicyHandler` musi znajdować się po anonimizacji (tuż przed `AuditContextHandler` i wyjściem do modelu).
+- **Dynamiczne składanie (`DynamicCoRFactory`):** Fabryka odczytuje deklaratywny profil `UserPipelineConfig` (klasa danych, aktywne detektory, próg $k_{min}$, polityka PDF/OCR, preferowany provider LLM) i deleguje złożenie oraz walidację łańcucha do `PipelineBuilder`.
 
-`PipelineBuilder` enkapsuluje złożoną logikę tworzenia pipeline'u:
-- sprawdza, że wymagane filtry (np. `PIIDetector` przed `AnonymizationFilter`) są obecne w odpowiedniej kolejności,
-- weryfikuje zgodność polityk (np. jeśli dane to PHI, wymaga silniejszej strategii),
-- tworzy niemutowalny obiekt `Pipeline` gotowy do użycia.
+```python
+class UserPipelineConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    data_class: DataClass
+    enabled_detectors: tuple[str, ...]
+    k_anonymity_min: int = 5
+    pdf_extraction_policy: PDFExtractionPolicy = PDFExtractionPolicy.STRICT_NO_OCR
+    audit_level: AuditLevel = AuditLevel.FULL
+    target_provider: str = "mistral-ai"
 
-```mermaid
-flowchart LR
-    B["PipelineBuilder"]
-    B -->|"for_data_class(MEDICAL)"| B1["+ PIIDetector"]
-    B -->|"with_residency_policy(...)"| B2["+ ResidencyPolicyFilter"]
-    B -->|"with_anonymization_strategy\n(TOKENIZE)"| B3["+ TokenizationStrategy"]
-    B -->|"with_audit_level(FULL)"| B4["+ AuditContextFilter"]
-    B -->|"build()"| P["✅ Immutable\nPipeline"]
+class PipelineBuilder:
+    def __init__(self) -> None:
+        self._handlers: list[FilterHandler] = []
+        self._data_class: DataClass = DataClass.GENERAL
+        self._has_active_detector: bool = False
+        self._has_active_anonymizer: bool = False
+        self._has_active_residency: bool = False
+        self._has_active_audit: bool = False
+
+    def for_data_class(self, data_class: DataClass) -> Self:
+        self._data_class = data_class
+        return self
+
+    def add_handler(self, handler: FilterHandler) -> Self:
+        if isinstance(handler, PIIDetectorHandler) and handler.is_enabled:
+            self._has_active_detector = True
+        elif isinstance(handler, AnonymizationHandler) and handler.is_enabled:
+            if not self._has_active_detector:
+                raise PipelineConfigurationError("Aktywny PIIDetectorHandler musi poprzedzać AnonymizationHandler.")
+            self._has_active_anonymizer = True
+        elif isinstance(handler, ResidencyPolicyHandler) and handler.is_enabled:
+            if not self._has_active_anonymizer:
+                raise PipelineConfigurationError("ResidencyPolicyHandler musi występować po AnonymizationHandler.")
+            self._has_active_residency = True
+        elif isinstance(handler, AuditContextHandler) and handler.is_enabled:
+            self._has_active_audit = True
+        self._handlers.append(handler)
+        return self
+
+    def build(self) -> FilterHandler:
+        if not self._handlers:
+            raise PipelineConfigurationError("Łańcuch musi zawierać co najmniej jedno ogniwo.")
+        if self._data_class == DataClass.MEDICAL:
+            if not self._has_active_anonymizer:
+                raise PipelineConfigurationError("Dla danych medycznych (PHI) aktywny AnonymizationHandler jest obowiązkowy.")
+            if not self._has_active_residency:
+                raise PipelineConfigurationError("Dla danych medycznych (PHI) aktywny ResidencyPolicyHandler jest obowiązkowy.")
+            if not self._has_active_audit:
+                raise PipelineConfigurationError("Dla danych medycznych (PHI) aktywny AuditContextHandler jest obowiązkowy.")
+
+        for i in range(len(self._handlers) - 1):
+            self._handlers[i].set_next(self._handlers[i + 1])
+        return self._handlers[0]
 ```
-
-```
-PipelineBuilder
-    .for_data_class(DataClass.MEDICAL)
-    .with_residency_policy(residency_policy_engine)
-    .with_anonymization_strategy(TokenizationStrategy())
-    .with_re_id_risk_threshold(0.05)
-    .with_audit_level(AuditLevel.FULL)
-    .build()
-```
-
-**Dlaczego Builder, nie Factory?**  
-Factory tworzy jeden dobrze znany obiekt. Builder jest niezbędny, gdy produkt wymaga **wielu kroków konfiguracji z walidacją między nimi** — np. nie można ustawić `with_audit_level(NONE)` przy `DataClass.MEDICAL` (naruszenie GDPR).
 
 ---
 
-### 3.4 Proxy — Tokenization Vault
+### 3.4 API Gateway na brzegu oraz Protection Proxy w Vault
 
-**Rola:** Kontrolowany punkt dostępu do operacji tokenizacji i de-tokenizacji.
-
-`VaultProxy` implementuje interfejs `TokenizationVault` i opakowuje `VaultCore`, dodając:
-1. **Uwierzytelnienie** żądającego podmiotu (JWT / mTLS),
-2. **Autoryzację** (RBAC/ABAC — czy ten podmiot może de-tokenizować ten typ encji?),
-3. **Audit log** każdej próby dostępu (udanej i odrzuconej),
-4. **Rate limiting** jako ochronę przed masową de-tokenizacją.
-
-```mermaid
-sequenceDiagram
-    participant Service as Usługa żądająca
-    participant VaultProxy as VaultProxy
-    participant AuthN as AuthN/AuthZ
-    participant AuditLog as AuditLog
-    participant VaultCore as VaultCore (rzeczywisty)
-    participant KMS as KMS
-
-    Service->>VaultProxy: de_tokenize(token, credentials)
-    VaultProxy->>AuthN: verify(credentials)
-    AuthN-->>VaultProxy: identity + permissions
-
-    alt BRAK uprawnień
-        VaultProxy->>AuditLog: log(DENIED, token, identity, timestamp)
-        VaultProxy-->>Service: 403 Forbidden
-    else MA uprawnienia
-        VaultProxy->>AuditLog: log(ATTEMPT, token, identity, timestamp)
-        VaultProxy->>VaultCore: de_tokenize(token)
-        VaultCore->>KMS: get_decryption_key(key_id)
-        KMS-->>VaultCore: key
-        VaultCore-->>VaultProxy: original_value
-        VaultProxy->>AuditLog: log(GRANTED, token, identity, timestamp)
-        VaultProxy-->>Service: original_value
-    end
-```
-
-**Struktura TokenRecord w VaultCore:**
-
-```
-TokenRecord {
-    token_id:        UUID          // publiczny identyfikator tokenu, np. <PERSON_1>
-    encrypted_value: bytes         // AES-256-GCM(original_value, data_encryption_key)
-    key_id:          UUID          // wskazuje na klucz w KMS
-    entity_type:     EntityType    // PERSON, PESEL, IBAN, ...
-    created_at:      timestamp
-    expires_at:      timestamp?    // zgodnie z retention policy
-    session_id:      UUID          // powiązanie z kontekstem żądania
-}
-```
+#### Zasada: Na wejściu wyłącznie API Gateway, Proxy wyłącznie w Vault
+1. **Brzeg sieci (Zero Proxy on Ingress):**
+   - Na brzegu sieci działa wyłącznie **`APIGateway`**.
+   - API Gateway jest centralnym punktem styku: przyjmuje żądania klientów, terminując połączenia TLS, weryfikuje tożsamość użytkownika (AuthN) i uprawnienia (AuthZ), egzekwuje limity zapytań (Rate Limiting) oraz udostępnia uniwersalne kontrolery API (w tym adaptery dla formatów Anthropic i OpenAI).
+   - Nie występuje żadne osobne proxy wejściowe — ruch od razu z API Gateway trafia do łańcucha CoR w zaufanej strefie.
+2. **Warstwa kryptograficzna (Protection Proxy):**
+   - Jedynym miejscem występowania wzorca Proxy (GoF) w całym systemie jest **`VaultProxy`**.
+   - `VaultProxy` działa jako **Protection Proxy** dla modułu `VaultCore` przechowującego klucze szyfrowania AES-256-GCM.
+   - Żaden komponent potoku nie ma bezpośredniego dostępu do bazy `TokenDB` ani `VaultCore`. Dostęp wymaga przejścia przez `VaultProxy`, który weryfikuje tożsamość sesji (`SecurityPrincipal`), sprawdza uprawnienia i wymusza zapis zdarzenia w audycie WORM.
 
 ---
 
 ### 3.5 Memento
 
-**Rola:** Zachowanie i przywracanie stanu pipeline'u w celu bezpiecznej rekonstrukcji kontekstu.
+#### Rola wzorca
+`PipelineMemento` odpowiada za zachowanie stanu sesji i mapowań tokenów bez ujawniania danych jawnych. 
 
-Memento służy dwóm celom:
+#### Polimorficzna Dynamiczna Tokenizacja Powtórzeń (Coreference Clustering)
+Gdy to samo imię i nazwisko pojawia się wielokrotnie:
+1. Każde wystąpienie otrzymuje **unikalny token instancyjny** (np. `<PERSON_ALPHA_INST_1>`, `<PERSON_ALPHA_INST_2>`).
+2. Do promptu wstrzykiwana jest reguła koreferencji:  
+   `[COREFERENCE: <PERSON_ALPHA_INST_1> == <PERSON_ALPHA_INST_2> -> Tożsamość: Podmiot A]`.  
+   LLM zachowuje pełną kohezję semantyczną, ale zewnętrzny podsłuch nie może powiązać powtórzeń.
+3. `PipelineMemento` przechowuje obiekt `EntityCluster` wraz z metadanymi wystąpień `EntityOccurrence`:
+   ```python
+   class EntityOccurrence(BaseModel):
+       model_config = ConfigDict(frozen=True, extra="forbid")
+       instance_token: str      # np. "<PERSON_ALPHA_INST_1>"
+       start_offset: int
+       end_offset: int
 
-#### A. Przywracanie tokenów w odpowiedzi LLM
+   class EntityCluster(BaseModel):
+       model_config = ConfigDict(frozen=True, extra="forbid")
+       cluster_id: UUID
+       entity_type: EntityType
+       vault_record_id: UUID    # Identyfikator w VaultCore (brak jawnego PII)
+       occurrences: tuple[EntityOccurrence, ...]  # Lista unikalnych tokenów w tekście
+   ```
+4. **Łańcuch rekonstrukcji (Outbound Chain) i streaming SSE (ADR-006):**
+   Odpowiedź modelu (pełna lub strumieniowana przez SSE) przechodzi przez trzy ogniwa `Outbound Chain`:
+   - **`OutputPIIDetectorHandler`:** Skanuje odpowiedź LLM przed rekonstrukcją w poszukiwaniu nieoczekiwanych lub halucynowanych surowych danych osobowych (np. wycieku danych treningowych). W zależności od polityki maskuje je lub przerywa odpowiedź z wpisem audytowym.
+   - **`WindowBufferingHandler`:** W trybie streamingu SSE buforuje wyłącznie krótkie okno tekstowe od napotkania znaku `<` do zamykającego `>` (z limitem długości okna i timeoutem), dzięki czemu tokeny podzielone między ramkami SSE (np. `"<PERSON_ALPHA_"` + `"INST_1>"`) są rekonstruowane atomowo bez zrywania płynności strumienia.
+   - **`ResponseRestorer`:** Odnajduje token w klastrze `PipelineMemento`, wywołuje autoryzowaną de-tokenizację w `VaultProxy` i wstawia oryginalną wartość do odpowiedzi przekazywanej do `APIGateway`. Po upływie TTL sesji `RetentionPolicyEngine` i `RetentionWorker` usuwają wygasłe migawki Memento oraz rekordy w `TokenDB`.
 
-`PipelineContext` (Originator) tworzy `PipelineMemento` po fazie anonimizacji. Ten snapshot zawiera mapowanie `token → metadane`, które pozwala `ResponseRestorer` przywrócić oryginalne wartości w odpowiedzi LLM **bez ponownego dostępu do Vault** dla każdego tokenu z osobna — jeden call, atomowe przywrócenie.
+---
 
-#### B. Odtwarzanie stanu po awarii
+### 3.6 Wielomodelowa integracja (Multi-Provider Dispatcher) i elastyczny wybór providera LLM
 
-Przy przerwaniu sesji (np. timeout LLM) system może odtworzyć stan z Memento i wznowić od momentu wysłania do LLM, bez ponownej anonimizacji (która byłaby niedeterministyczna przy tokenach sekwencyjnych).
+System **nie narzuca na sztywno żadnego pojedynczego modelu ani providera**. Wybór dostawcy LLM jest całkowicie dynamiczny i konfigurowalny przez klienta:
 
-#### C. Dynamic Memento Expansion w sesji agentowej
-
-W sesji agentowej `PipelineMemento` jest rozszerzalny i może atomowo dopisywać nowe tokeny powstałe podczas wykonywania narzędzi. Gdy `ToolExecutionMiddleware` pobierze z Vault wartość potrzebną do zapytania (np. `Jan Kowalski`), wynik z bazy danych jest natychmiast tokenizowany w Vault/Memento (np. `1990-01-01` → `<DATE_1>`), a wpis `<DATE_1>` zostaje dodany do istniejącego `token_map` tej samej sesji. Memento nie ujawnia wartości jawnej ani LLM, ani komponentom przechowującym snapshot.
-
-Rozszerzenie jest wersjonowane i wykonywane przed zwróceniem wyniku narzędzia do LLM, dzięki czemu `ResponseRestorer` korzystający z końcowego snapshotu przywraca zarówno tokeny pierwotnego promptu (`<PERSON_1>`), jak i tokeny wygenerowane dynamicznie przez narzędzie (`<DATE_1>`). Operacja wymaga kontroli integralności, zgodności `session_id` oraz audytu tak jak początkowa anonimizacja.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Processing : wejście użytkownika
-    Processing --> Anonymized : filtr anonimizacji + tworzenie Memento
-    Anonymized --> SentToLLM : Residency OK
-    SentToLLM --> WaitingForLLM
-    WaitingForLLM --> ResponseReceived : sukces
-    WaitingForLLM --> Recovering : timeout lub błąd
-    Recovering --> SentToLLM : retry z Memento
-    ResponseReceived --> Restored : ResponseRestorer przywraca z Memento + Vault
-    Restored --> [*] : odpowiedź do klienta
-```
-
-```
-PipelineMemento {
-    session_id:      UUID
-    token_map:       Map<Token, EntityMetadata>   // NIE zawiera oryginalnych wartości
-    version:        int                           // wersja po każdym rozszerzeniu
-    applied_filters: List<FilterRecord>
-    timestamp:      Instant
-    checksum:       bytes   // integralność snapshotu
-}
-```
-
-> **Ważne:** Memento **nigdy nie przechowuje oryginalnych wartości PII** — tylko tokeny i metadane. Oryginalne wartości żyją wyłącznie w Vault (zaszyfrowane), również dla tokenów dodanych dynamicznie podczas wywołania narzędzia.
+1. **Wskazanie providera przez API:**
+   Klient wysyłający żądanie do `APIGateway` może określić docelowy model i providera:
+   - w nagłówku HTTP: `X-Target-Provider: mistral-ai` (lub `azure-openai`, `anthropic-eu`, `vllm-local`),
+   - w parametrach żądania JSON: `{"model": "mistral-large-2407", "provider": "mistral-ai"}`,
+   - w domyślnym profilu konfiguracyjnym tenanta (`UserPipelineConfig`).
+2. **Uniwersalne kontrolery w API Gateway:**
+   - **Natywny endpoint `/v1/process`:** dla aplikacji korporacyjnych przekazujących ustrukturyzowane konteksty biznesowe i pliki.
+   - **Endpoint `/v1/chat/completions`:** zgodny ze standardem OpenAI — umożliwia podpięcie bibliotek `openai-python`, LangChain, LlamaIndex.
+   - **Endpoint `/v1/messages`:** zgodny ze standardem Anthropic — umożliwia bezproblemowe podpięcie narzędzi takich jak **Claude Code CLI** czy wtyczek programistycznych.
+3. **Multi-Provider Dispatcher (`MultiProviderLLMDispatcher`):**
+   Po przejściu łańcucha CoR i weryfikacji rezydencji danych (`ResidencyPolicyHandler`), moduł `MultiProviderLLMDispatcher` dobiera właściwy `LLMProviderAdapter` i kieruje zanonimizowany kontekst przez `EgressGateway` do wybranego docelowego providera działającego w EOG:
+   - **Mistral AI (Paryż / EOG):** Bezpośrednie wywołanie API modeli europejskich.
+   - **Azure OpenAI (Frankfurt / Dublin / EOG):** Wywołanie modeli GPT w ramach dedykowanych europejskich subskrypcji korporacyjnych.
+   - **Anthropic Claude (Region EOG):** Wywołanie modeli Claude hostowanych w strefie EOG (np. przez AWS Bedrock w regionie Frankfurt/Paryż).
+   - **Lokalne instancje vLLM / Ollama:** Wywołanie modeli open-weight (np. Bielik, Llama 3) działających w infrastrukturze własnej (on-premise).
 
 ---
 
 ## 4. Komponenty systemu
 
-```mermaid
-flowchart TD
-    subgraph ClientLayer["Client Layer"]
-        App["Aplikacja kliencka"]
-        SDK["Privacy Pipeline SDK"]
-    end
-
-    subgraph PipelineLayer["Pipeline Layer"]
-        ProxyComp["PipelineProxy (entry point)"]
-        InPipe["Inbound Pipeline"]
-        OutPipe["Outbound Pipeline"]
-        BuilderComp["PipelineBuilder"]
-    end
-
-    subgraph DetectionLayer["Detection Layer"]
-        LangDet["LanguageDetector (PL/EN/DE...)"]
-        PIIDet["PIIDetector (reguły + NER ML)"]
-        PHIDet["PHIDetector (HL7/FHIR aware)"]
-        ReIdDet["ReIdRiskAnalyzer (k-anonimowość)"]
-        OutPIIDet["OutputPIIDetector"]
-    end
-
-    subgraph AnonLayer["Anonymization Layer"]
-        AnonFilter["AnonymizationFilter"]
-        StratSel["StrategySelector"]
-        TokStrat["TokenizationStrategy"]
-        MaskStrat["MaskingStrategy"]
-        GenStrat["GeneralizationStrategy"]
-        SynStrat["SynthesisStrategy"]
-    end
-
-    subgraph VaultLayer["Vault Layer"]
-        VProxy["VaultProxy (AuthN/AuthZ/Audit)"]
-        VCore["VaultCore (encrypt/decrypt)"]
-        TokenDB[("TokenDB (encrypted records)")]
-    end
-
-    subgraph KeyMgmt["Key Management"]
-        KMS["KMS (klucze szyfrowania)"]
-        KeyRotation["KeyRotation Scheduler"]
-    end
-
-    subgraph PolicyLayer["Policy Layer"]
-        ResPolicy["ResidencyPolicyEngine"]
-        DataClass["DataClassifier"]
-        RetPolicy["RetentionPolicyEngine"]
-        RetWorker["RetentionWorker (asynchroniczny purge)"]
-    end
-
-    subgraph AuditLayer["Audit Layer"]
-        AuditLogDB[("Immutable Audit Log")]
-        AuditWriter["AuditWriter (append-only)"]
-        AlertingComp["Alerting (SIEM integration)"]
-    end
-
-    App --> SDK --> ProxyComp
-    ProxyComp --> InPipe --> LangDet --> PIIDet --> PHIDet --> ReIdDet
-    ReIdDet --> AnonFilter
-    AnonFilter --> StratSel
-    StratSel --> TokStrat & MaskStrat & GenStrat
-    TokStrat --> VProxy --> VCore --> TokenDB
-    SynStrat --> VProxy
-    VCore --> KMS
-    KeyRotation --> KMS
-
-    InPipe --> ResPolicy
-    ResPolicy --> DataClass
-    RetPolicy --> TokenDB
-    RetPolicy --> RetWorker --> TokenDB
-    OutPipe --> OutPIIDet --> VProxy
-
-    VProxy --> AuditWriter --> AuditLogDB
-    AuditLogDB --> AlertingComp
-```
-
-### Opis kluczowych komponentów
-
-| Komponent | Odpowiedzialność | Wzorzec |
-|-----------|-----------------|---------|
-| `PipelineProxy` | Pojedynczy punkt wejścia; zarządza sesjami, Memento oraz normalizuje tekst, załączniki PDF i obiekty `ToolCall` JSON | Proxy, Facade |
-| `Inbound Pipeline` | Przetwarza `PipelineContext` oraz ustrukturyzowane wywołania narzędzi; tokenizuje argumenty `name`/`arguments` przed przekazaniem do LLM | Pipes & Filters |
-| `DocumentExtractorFilter` | Ekstrahuje warstwę tekstową z plików PDF, usuwa metadane XMP/Info i blokuje (`HardStopError`) surowe binaria lub skany bez lokalnego OCR | Filter |
-| `PIIDetector` | Hybrydowy detektor (Strategy): łączy reguły regex + checksum, modele Transformer NER (HerBERT / GLiNER) oraz słowniki i reguły kontekstowe | Filter + Strategy |
-| `OutputPIIDetector` | Skanuje odpowiedź LLM pod kątem PII wygenerowanego lub ujawnionego przez model, przed de-tokenizacją | Filter |
-| `AnonymizationFilter` | Deleguje do strategii wybranej przez `StrategySelector` | Filter + Strategy |
-| `VaultProxy` | Enforce AuthN/AuthZ/RateLimit przed każdą operacją na Vault | Proxy |
-| `VaultCore` | Szyfruje/deszyfruje wartości PII, zarządza cyklem życia tokenów | — |
-| `RetentionWorker` | Asynchronicznie usuwa wygasłe rekordy tokenów po TTL sesji i audytuje wykonanie purge | Worker |
-| `ResidencyPolicyEngine` | Sprawdza, czy docelowy LLM jest w dozwolonej strefie geograficznej | Policy |
-| `ReIdRiskAnalyzer` | Oblicza ryzyko re-identyfikacji metodą k-anonimowości | Filter |
-| `PipelineBuilder` | Tworzy i waliduje konfigurację pipeline'u | Builder |
-| `AuditWriter` | Append-only zapis do niezmiennego logu (WORM storage / blockchain hash) | — |
-
-**Rozmieszczenie komponentów Vault, KMS, audytu i residency w kodzie:**
-
-| Moduł | Komponenty |
-|-------|-----------|
-| `src/domain/protocols.py` | Interfejsy `TokenizationVault`, `KMS`, `AuditWriter`, `ResidencyPolicyEngine` |
-| `src/domain/models.py` | `TokenRecord`, `KeyStatus`, `RotationStrategy` |
-| `src/vault/vault.py` | `VaultCore` (dostępny wyłącznie przez `VaultProxy`) |
-| `src/vault/proxy.py` | `VaultProxy`, `AccessControlPolicy` (RBAC/ABAC, rate limiting) |
-| `src/vault/keys.py` | `InMemoryKMS` (implementacja `KMS`, hierarchia MK → KEK → DEK), `KeyRotation` |
-| `src/vault/audit.py` | `AuditLog` (implementacja `AuditWriter` z łańcuchem hashy), `Alerting` (integracja SIEM) |
-| `src/dispatchers/residency.py` | `DeclarativeResidencyPolicyEngine`, `ResidencyRule`, `ResidencyDecision` |
-
-`PipelineProxy` i `Inbound Pipeline` nie zakładają, że wejście jest wyłącznie typu `str`:
-- Dla obiektu `ToolCall` zachowują strukturę JSON, identyfikator wywołania, nazwę funkcji oraz schemat argumentów, a anonimizacji podlegają wartości w `arguments` (rekurencyjnie, zgodnie z typem encji). Dzięki temu LLM otrzymuje wyłącznie zanonimizowaną definicję i parametry narzędzia, natomiast middleware może przechwycić ustrukturyzowany call przed wykonaniem.
-- Dla załączników dokumentowych (np. **plików PDF**) obowiązuje zasada **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowy plik binarny zostaje zatrzymany w `PipelineProxy`, `DocumentExtractorFilter` wyciąga wyłącznie tekst (odrzucając metadane dokumentu i ukryte warstwy), a wyekstrahowana treść przechodzi przez standardowy łańcuch detekcji i anonimizacji. Jeśli PDF jest skanem lub zawiera osadzone obrazy przy braku lokalnego modułu OCR, potok wykonuje `UnsupportedMediaWithPotentialPIIError` (`HardStopError`).
-
-```
-ToolCall {
-    id:        UUID
-    name:      string
-    arguments: JSON          // wartości PII zastąpione tokenami
-    session_id: UUID
-}
-```
+| Warstwa | Komponent | Odpowiedzialność | Wzorzec |
+|---|---|---|---|
+| **Edge** | `APIGateway` | Pojedynczy punkt wejścia na brzegu; terminacja TLS, AuthN/AuthZ, rate limiting, uniwersalne kontrolery API (`/v1/process`, `/v1/messages`, `/v1/chat/completions`) | Gateway / Adapter |
+| **Config** | `UserPipelineConfig` | Deklaratywny profil konfiguracyjny filtrów, detektorów, progów i wybranego providera LLM | Configuration Model |
+| **Config** | `DynamicCoRFactory` | Dynamiczne mapowanie profilu `UserPipelineConfig` na wywołania `PipelineBuilder` w czasie uruchomienia | Factory |
+| **Pipeline (In)** | `BaseFilterHandler` | Klasa bazowa ogniw łańcucha z metodą `handle()`, flagą `is_enabled`, referencją `_next_handler` i polityką Fail-Closed | Chain of Responsibility |
+| **Pipeline (In)** | `PipelineBuilder` | Budowanie łańcucha z konfiguracji, spięcie referencji i walidacja niezmienników Privacy by Design | Builder |
+| **Pipeline (In)** | `DocumentExtractorHandler` | Ekstrakcja tekstu z PDF, DOCX, XLSX, CSV, obrazów (OCR) i archiwów w piaskownicy przez `DocumentExtractorStrategy` | CoR Handler + Strategy |
+| **Pipeline (In)** | `LanguageDetectorHandler` | Rozpoznawanie języków europejskich (PL, EN, DE, FR...) | CoR Handler |
+| **Pipeline (In)** | `PIIDetectorHandler` | Hybrydowy detektor danych osobowych specyficznych dla Polski i UE (`PIIDetector`) | CoR Handler + Strategy |
+| **Pipeline (In)** | `RiskAssessmentHandler` | Szacowanie ryzyka re-identyfikacji i k-anonimowości w oparciu o `PublicDataDemographicsProvider` | CoR Handler |
+| **Pipeline (In)** | `AnonymizationHandler` | Dobór strategii anonimizacji (`StrategySelector`), polimorficzna tokenizacja powtórzeń | CoR Handler + Strategy |
+| **Pipeline (In)** | `ResidencyPolicyHandler` | Weryfikacja zgodności z wymogiem przetwarzania w EOG za pomocą `ResidencyPolicyEngine` (Fail-Closed Gate) | CoR Handler (Gate) |
+| **Pipeline (In)** | `AuditContextHandler` | Skompletowanie metadanych audytowych i zapis zdarzenia zakończenia potoku wejściowego | CoR Handler |
+| **Pipeline (Out)** | `OutputPIIDetectorHandler` | Skanowanie odpowiedzi LLM przed rekonstrukcją w poszukiwaniu nieoczekiwanych wycieków PII | CoR Handler |
+| **Pipeline (Out)** | `WindowBufferingHandler` | Buforowanie okien `<...>` w strumieniu SSE w celu atomowej de-tokenizacji placeholderów | Streaming CoR Handler |
+| **Pipeline (Out)** | `ResponseRestorer` | Przywracanie oryginalnych wartości w odpowiedzi lub strumieniu SSE z użyciem `PipelineMemento` i `VaultProxy` | CoR Handler / Restorer |
+| **Dispatcher** | `MultiProviderLLMDispatcher` | Kierowanie zanonimizowanego promptu do wybranego przez klienta providera w EOG przez `LLMProviderAdapter` | Dispatcher / Strategy |
+| **Egress** | `EgressGateway` | Brama wyjściowa wymuszająca filtrowanie domen i Geo-IP wyłącznie w granicach EOG | Egress Gate |
+| **State** | `PipelineMemento` | Niemutowalny stan sesji, rejestr klastrów koreferencyjnych (`EntityCluster`, `EntityOccurrence`) | Memento |
+| **State** | `RetentionPolicyEngine` / `RetentionWorker` | Wyznaczanie TTL sesji (RODO art. 17) oraz okresowe usuwanie wygasłych migawek i rekordów `TokenDB` | Policy / Worker |
+| **Vault** | `VaultProxy` | Jedyny wzorzec Proxy w systemie: kontrola dostępu (RBAC/ABAC), audyt WORM, rate-limit | Protection Proxy |
+| **Vault** | `VaultCore` | Szyfrowanie/deszyfrowanie AES-256-GCM z AAD, zarządzanie rekordami `TokenRecord` | Cryptographic Module |
+| **Vault** | `TokenDB` | Zaszyfrowana baza danych PostgreSQL przechowująca wyłącznie szyfrogramy `TokenRecord` | Encrypted Store |
+| **KMS** | `InMemoryKMS` / `CloudKMS` | Zarządzanie hierarchią kluczy MK → KEK → DEK, obsługa rotacji i statusów kluczy | Key Management |
+| **Policy** | `PublicDataDemographicsProvider` | Zindeksowany lokalny magazyn statystyk demograficznych GUS i Eurostat (*Zero-Network-Call Runtime*) | Data Provider |
+| **Compliance** | `AuditLog` | Zapis zdarzeń w formacie WORM z kryptograficznym łańcuchem hashy SHA-256 | Append-Only Logger |
+| **Compliance** | `SIEM` | Integracja z systemem SOC/SIEM dla alertów bezpieczeństwa w czasie rzeczywistym | Alerting / SIEM |
 
 ---
 
 ## 5. Scenariusze użycia
 
-### 5.1 Pseudonimizacja — happy path
+### 5.1 Pseudonimizacja polimorficzna — happy path
 
-**Wejście:** `"Jan Kowalski, PESEL 90010112345, skarży się na fakturę 7/2026"`
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Proxy as PipelineProxy
-    participant InPipe as Inbound Pipeline
-    participant Vault as VaultProxy
-    participant LLM as Zewnętrzny LLM
-    participant OutPipe as Outbound Pipeline
-    participant OutputPII as OutputPIIDetector
-
-    User->>Proxy: query("Jan Kowalski, PESEL 90010112345...")
-    Proxy->>InPipe: process(context)
-
-    Note over InPipe: [Filter 1] LanguageDetectorFilter - PL
-    Note over InPipe: [Filter 2] PIIDetectorFilter - PERSON: "Jan Kowalski", PESEL: "90010112345"
-    Note over InPipe: [Filter 3] RiskAssessmentFilter (ReIdRiskAnalyzer) - LOW
-    Note over InPipe: [Filter 4] AnonymizationFilter
-
-    InPipe->>Vault: tokenize("Jan Kowalski", PERSON)
-    Vault-->>InPipe: token PERSON_1
-    InPipe->>Vault: tokenize("90010112345", PESEL)
-    Vault-->>InPipe: token PESEL_1
-
-    Note over InPipe: [Filter 5] ResidencyPolicyFilter - ALLOWED
-    Note over InPipe: Tworzenie Memento (snapshot token_map)
-
-    InPipe-->>Proxy: "PERSON_1, PESEL_1, skarzy sie na fakture 7/2026"
-    Proxy->>LLM: zanonimizowany tekst
-    LLM-->>Proxy: "Sprawa PERSON_1 (PESEL_1) dotyczy faktury 7/2026..."
-
-    Proxy->>OutPipe: restore(response, memento)
-    OutPipe->>OutputPII: scan(response)
-    OutputPII-->>OutPipe: brak nowego PII / tokeny do przywrócenia
-    OutPipe->>Vault: de_tokenize(PERSON_1, credentials)
-    Vault-->>OutPipe: "Jan Kowalski"
-    OutPipe->>Vault: de_tokenize(PESEL_1, credentials)
-    Vault-->>OutPipe: "90010112345"
-    OutPipe-->>Proxy: odpowiedź z przywróconymi danymi
-    Proxy-->>User: "Sprawa Jana Kowalskiego (PESEL 90010112345)..."
-```
-
-**Wynik wysłany do LLM:** `"<PERSON_1>, <PESEL_1>, skarży się na fakturę 7/2026"`  
-**Wynik zwrócony użytkownikowi:** oryginalna treść z przywróconymi danymi.
-
-`OutputPIIDetector` działa przed de-tokenizacją i odwróceniem Memento. Wykrywa zarówno PII podchwycone z kontekstu, jak i nowe, zmyślone lub pochodzące z danych treningowych modelu (hallucination / training data leak). W przypadku wykrycia nieoczekiwanego PII odpowiedź jest blokowana albo kierowana do polityki redakcji i audytu; nie może zostać automatycznie wzbogacona o dane z Vault.
-
----
-
-### 5.2 Nieautoryzowana de-tokenizacja
-
-**Scenariusz:** Serwis B (bez uprawnień) próbuje de-tokenizować `<PERSON_1>` należący do sesji serwisu A.
+**Wejście:** `"Jan Kowalski zgłosił awarię. Jan Kowalski prosi o kontakt pod numerem konta PL61109010140000071219812874."`
 
 ```mermaid
 sequenceDiagram
-    participant ServiceB as Serwis B (nieuprawniony)
-    participant VProxy as VaultProxy
-    participant AuthZ as AuthZ Engine
-    participant AuditLog as AuditLog
-    participant Alerting as SIEM / Alerting
+    participant User as Aplikacja Kliencka
+    participant APIGW as 🚪 API Gateway
+    participant CoR as 🔗 Łańcuch CoR
+    participant Memento as 🧠 PipelineMemento
+    participant Vault as 🛡️ VaultProxy
+    participant Disp as 🔀 LLM Dispatcher
+    participant LLM as 🤖 Wybrany Model w EOG (np. Mistral)
+    participant OutChain as 🔗 Outbound Chain
+    participant Restorer as 🔓 ResponseRestorer
 
-    ServiceB->>VProxy: de_tokenize(PERSON_1, token=JWT_B)
-    VProxy->>AuthZ: can_de_tokenize(identity=B, token=PERSON_1, entity_type=PERSON)
-    AuthZ-->>VProxy: DENIED (brak roli PERSON_DETOKENIZE)
+    User->>APIGW: POST /v1/process {text: "Jan Kowalski... PL611090...", provider: "mistral-ai"}
+    APIGW->>APIGW: AuthN JWT OK, Rate Limit OK
+    APIGW->>CoR: handle(PipelineContext)
 
-    VProxy->>AuditLog: SECURITY_EVENT type=DETOKENIZE_DENIED requestor=ServiceB
-    AuditLog->>Alerting: trigger(SECURITY_EVENT)
-    VProxy-->>ServiceB: HTTP 403 Forbidden
+    Note over CoR: Wykrycie 2x PERSON: "Jan Kowalski" oraz 1x IBAN_PL: "PL611090..."
+
+    CoR->>Vault: tokenize("Jan Kowalski", PERSON, session_id)
+    Vault-->>CoR: record_id: rec_7a1b...
+    CoR->>Vault: tokenize("PL611090...", IBAN_PL, session_id)
+    Vault-->>CoR: record_id: rec_9c2d...
+
+    Note over CoR: Wygenerowanie tokenów polimorficznych:<br/>Jan Kowalski #1 -> <PERSON_ALPHA_INST_1><br/>Jan Kowalski #2 -> <PERSON_ALPHA_INST_2><br/>IBAN -> <IBAN_PL_1>
+
+    CoR->>Memento: register_cluster(rec_7a1b, [<PERSON_ALPHA_INST_1>, <PERSON_ALPHA_INST_2>])
+    CoR->>Memento: register_cluster(rec_9c2d, [<IBAN_PL_1>])
+    
+    Note over CoR: Dodanie reguły relacji:<br/>[COREFERENCE: <PERSON_ALPHA_INST_1> == <PERSON_ALPHA_INST_2>]
+
+    CoR->>Disp: dispatch(sanitized_context, provider="mistral-ai")
+    Disp->>LLM: wysyłka przez EgressGateway do endpointu Mistral w EOG
+    LLM-->>OutChain: "Potwierdzono zgłoszenie <PERSON_ALPHA_INST_1>. Płatność trafi na <IBAN_PL_1> dla <PERSON_ALPHA_INST_2>."
+
+    Note over OutChain: OutputPIIDetectorHandler (OK) -> WindowBufferingHandler (SSE) -> ResponseRestorer
+    OutChain->>Restorer: restore(response, memento)
+    Restorer->>Memento: resolve(<PERSON_ALPHA_INST_1>) -> rec_7a1b
+    Restorer->>Memento: resolve(<PERSON_ALPHA_INST_2>) -> rec_7a1b
+    Restorer->>Memento: resolve(<IBAN_PL_1>) -> rec_9c2d
+    Restorer->>Vault: de_tokenize(rec_7a1b, credentials)
+    Vault-->>Restorer: "Jan Kowalski"
+    Restorer->>Vault: de_tokenize(rec_9c2d, credentials)
+    Vault-->>Restorer: "PL61109010140000071219812874"
+
+    Restorer-->>APIGW: odpowiedź z oryginalnymi danymi
+    APIGW-->>User: pełna odpowiedź biznesowa
 ```
-
-**Mechanizmy ochrony:**
-- Token jest powiązany z `session_id` — nawet znajomość tokenu nie pozwala na de-tokenizację poza oryginalną sesją (strict mode).
-- `AuditLog` jest append-only — zdarzenie odmowy nie może zostać usunięte.
-- Wielokrotne odmowy z tego samego źródła triggerują alert w SIEM.
 
 ---
 
-### 5.3 Data Residency — blokada
+### 5.2 Nieautoryzowana de-tokenizacja — natychmiastowe odrzucenie
 
-**Scenariusz:** Dane medyczne (PHI) mają być wysłane do providera LLM zlokalizowanego poza EU (np. us-east-1).
-
-```mermaid
-flowchart TD
-    A["Żądanie z danymi PHI (DataClass: MEDICAL)"] --> B
-    B["ResidencyPolicyEngine"] --> C{Czy provider LLM jest w EU?}
-    C -->|"NIE (us-east-1)"| D["ResidencyViolationError (HardStopError)"]
-    C -->|"TAK (eu-west-1)"| E["Kontynuuj pipeline"]
-    D --> F["AuditLog: RESIDENCY_BLOCKED"]
-    D --> G["HTTP 451 Unavailable For Legal Reasons"]
-    F --> H["Alert: Compliance Team"]
-```
-
-**Polityki residency (przykłady):**
-
-```yaml
-residency_policies:
-  - data_class: MEDICAL
-    allowed_regions: [eu-west-1, eu-central-1, eu-north-1]
-    deny_action: HARD_BLOCK
-
-  - data_class: FINANCIAL
-    allowed_regions: [eu-*]
-    deny_action: HARD_BLOCK
-
-  - data_class: GENERAL
-    allowed_regions: ["*"]
-    deny_action: NONE
-```
-
-**Zgodność z EU AI Act:** Systemy przetwarzające dane zdrowotne są klasyfikowane jako **high-risk** (Annex III). Polityka residency jest wymagana przez art. 9(1) oraz GDPR art. 44–49 (transfer danych poza EOG).
+Próba wywołania de-tokenizacji przez nieuprawniony serwis lub z niepoprawnym tokenem sesji skutkuje natychmiastowym odrzuceniem przez `VaultProxy`:
+1. `VaultProxy` sprawdza tożsamość i uprawnienia (`SecurityPrincipal`: uwierzytelnienie, rola RBAC/ABAC, zgodność `tenant_id` i `session_id` oraz ważność tokenu).
+2. Przy braku roli lub niezgodności sesji generowany jest wpis `DETOKENIZE_DENIED` do `AuditLog`.
+3. Zwracany jest natychmiastowy błąd **HTTP 403 Forbidden** (`UnauthorizedVaultAccessError`), bez ujawnienia jakichkolwiek szczegółów kryptograficznych.
 
 ---
 
-### 5.4 Re-identyfikacja — k-anonimowość
+### 5.3 Residency danych w EOG — blokada i odrzucenie zapytania
 
-**Scenariusz:** Kontekst zawiera kombinację quasi-identyfikatorów: `zawód: neurochirurg`, `miasto: Sępólno Krajeńskie`, `wiek: 47`.
-
-`ReIdRiskAnalyzer` szacuje, ile osób w Polsce pasuje do tego profilu. Jeśli `k < k_min` (np. k=2 < k_min=5), uruchamia `GeneralizationStrategy`.
+Wszelkie dane wrażliwe (medyczne PHI, finansowe, kod źródłowy) kierowane do modeli poza Europejskim Obszarem Gospodarczym są natychmiast odrzucane:
 
 ```mermaid
 flowchart TD
-    A["Quasi-identyfikatory:\n zawod: neurochirurg\n miasto: Sepólno Krajenskie\n wiek: 47"] --> B
-    B["ReIdRiskAnalyzer - estymacja k"] --> C{k >= k_min = 5?}
-    C -->|"NIE (k ok. 1-2)"| D["GeneralizationStrategy"]
-    C -->|"TAK"| E["Dane wystarczajaco anonimowe - pass-through"]
-    D --> F["Wynik:\n zawod: lekarz specjalista\n region: woj. kujawsko-pomorskie\n wiek: 40-50"]
-    F --> G["Kontynuuj pipeline (zredukowane ryzyko re-ID)"]
-```
+    Req["Żądanie klienta (DataClass: MEDICAL)"] --> APIGW["🚪 API Gateway"]
+    APIGW --> CoR["🔗 Łańcuch potoku CoR"]
+    CoR --> ResHandler["🌍 ResidencyPolicyHandler"]
+    
+    ResHandler --> Check{Czy cel transferu leży w EOG?}
+    Check -->|"NIE (próba transferu poza UE)"| Block["❌ Fail-Closed Reject:\nResidencyViolationError"]
+    Check -->|"TAK (region EOG, np. Mistral Paryż)"| Allow["✅ Przepuszczenie do MultiProviderLLMDispatcher"]
 
-**Hierarchie generalizacji — lokalizacja:**
+    Block --> Audit["📜 AuditLog: RESIDENCY_VIOLATION_BLOCKED"]
+    Audit --> Resp["📤 Zwrot błędu HTTP 451 Unavailable For Legal Reasons"]
 
+    style Block fill:#ffcdd2,stroke:#d32f2f
+    style Allow fill:#c8e6c9,stroke:#388e3c
 ```
-Sępólno Krajeńskie
-    → powiat sępoleński
-        → woj. kujawsko-pomorskie
-            → Polska Północna
-                → Polska
-```
-
-**Hierarchie generalizacji — zawód:**
-
-```
-neurochirurg
-    → chirurg
-        → lekarz specjalista
-            → lekarz
-                → pracownik służby zdrowia
-```
-
-> **Uwaga:** k-anonimowość jest **konieczna, ale niewystarczająca**. Należy rozważyć ℓ-różnorodność (l-diversity) dla atrybutów wrażliwych (np. diagnoza) i t-bliskość (t-closeness) w systemach przetwarzających dane medyczne.
 
 ---
 
-### 5.5 Rotacja kluczy
+### 5.4 Re-identyfikacja — k-anonimowość z danymi publicznymi (GUS, Eurostat)
 
-**Zasada:** Rotacja kluczy szyfrowania nie unieważnia istniejących tokenów — dane są re-szyfrowane lub zachowywana jest zdolność odczytu starymi kluczami zgodnie z polityką retencji.
+Gdy `RiskAssessmentHandler` wykryje kombinację quasi-identyfikatorów (np. wiek, unikalny zawód, mała miejscowość), odpytuje lokalny `PublicDataDemographicsProvider`. Jeśli liczność grupy $N_{pop} < k_{min}$ (np. $k < 5$):
+- uruchamiana jest `GeneralizationStrategy` uogólniająca dane (miejscowość $\rightarrow$ powiat $\rightarrow$ województwo),
+- jeśli uogólnienie nie pozwala osiągnąć $k \ge k_{min}$, zapytanie zostaje **odrzucone w trybie fail-closed** z błędem `ReIdentificationRiskError` (HTTP 422) i wpisem `RE_IDENTIFICATION_RISK_REJECT`.
 
-```mermaid
-flowchart TD
-    A["KeyRotation Scheduler"] --> B
-    B["KMS: generate_new_key() - key_id_v2"] --> C
-    C["TokenDB: pobierz rekordy z key_id_v1, status=ACTIVE"] --> D{Strategia rotacji}
-    D -->|"RE_ENCRYPT (domyslna)"| E["1. decrypt(value, key_v1)\n2. encrypt(value, key_v2)\n3. update key_id na v2"]
-    D -->|"RETAIN_OLD_KEY (legacy)"| F["key_v1: status DEPRECATED\naktywny do expires_at"]
-    D -->|"EXPIRE (strict)"| G["Tokeny z key_v1: status EXPIRED\nde-tokenizacja niemozliwa"]
-    E --> H["AuditLog: KEY_ROTATION_COMPLETED"]
-    F --> H
-    G --> H
+---
 
-    style E fill:#d0f0c0,stroke:#2d6a4f
-    style G fill:#ffd6d6,stroke:#8f2d2d
-```
+### 5.5 Rotacja kluczy kryptograficznych
 
-**Polityki retencji vs. rotacja:**
+Zarządzanie cyklem życia kluczy KEK/DEK w `InMemoryKMS` / `CloudKMS` opiera się na jawnych statusach (`KeyStatus`) i strategiach rotacji (`RotationStrategy`):
 
-| Scenariusz | Polityka kluczy | Skutek |
-|-----------|----------------|--------|
-| Standardowa rotacja | RE_ENCRYPT (atomic) | Stare tokeny działają, dane re-szyfrowane |
-| Koniec okresu retencji | EXPIRE | Token staje się nierozwiązywalny — prawo do zapomnienia |
-| Kompromitacja klucza | REVOKE + RE_ENCRYPT priorytetowo | Natychmiastowe re-szyfrowanie |
-
-> **Uwaga:** Strategia EXPIRE powoduje **nieodwracalną utratę** możliwości de-tokenizacji. Należy upewnić się, że dane nie są już potrzebne lub zostały wcześniej zapisane przez klienta.
+1. **Cykl życia klucza (`KeyStatus`):**
+   - `ACTIVE` — jedyny klucz używany do szyfrowania nowych rekordów `TokenRecord` i deszyfrowania istniejących.
+   - `DEPRECATED` — klucz po rotacji; nie szyfruje nowych danych, ale pozostaje dostępny do deszyfrowania istniejących tokenów aż do upływu ich TTL.
+   - `EXPIRED` — klucz, którego okres ważności minął; próba użycia rzuca `KeyExpiredError` i zapisuje `TOKEN_OR_KEY_EXPIRED` w `AuditLog`.
+   - `REVOKED` — klucz natychmiastowo unieważniony (np. incydent bezpieczeństwa lub Crypto-Shredding RODO art. 17); każda próba deszyfrowania jest blokowana (`KeyExpiredError`).
+2. **Strategie rotacji (`RotationStrategy`):**
+   - `RETAIN_OLD_KEY` (domyślna dla krótkich sesji) — generowany jest nowy `key_id` (`ACTIVE`), stary przechodzi w `DEPRECATED` i wygasa po zakończeniu aktywnych sesji.
+   - `RE_ENCRYPT` (dla danych długotrwałych) — worker re-szyfruje aktywne `TokenRecord` nowym kluczem `ACTIVE`, po czym stary klucz przechodzi w `EXPIRED`.
+   - `EXPIRE` (Crypto-Shredding) — natychmiastowe przejście starego klucza w `REVOKED`, czyniące zaszyfrowane nim rekordy kryptograficznie nieodwracalnymi.
 
 ---
 
 ### 5.6 Anonymized Agentic Tool Calling (Scenariusz odpytania bazy danych)
 
-**Scenariusz:** Użytkownik pyta: `"Kiedy urodził się Jan Kowalski?"`. Agent LLM nie ma bezpośredniego dostępu do bazy danych ani danych jawnych. `Inbound Pipeline` tokenizuje PII, a middleware przechwytuje każde wywołanie narzędzia przed jego wykonaniem.
+W scenariuszu agentowym LLM decyduje o wywołaniu zewnętrznego narzędzia (np. zapytania SQL/REST) przekazując w argumentach tokeny instancyjne. Proces obsługuje zaufana warstwa wykonawcza z użyciem **Dynamic Memento Expansion**:
 
 ```mermaid
 sequenceDiagram
-    participant User as Użytkownik
-    participant Middleware as Middleware / PipelineProxy
-    participant InPipe as Inbound Pipeline
-    participant Vault as Vault / Memento
-    participant LLM as LLM (bez dostępu do DB)
-    participant ToolMW as ToolExecutionMiddleware
-    participant DB as Baza danych
-    participant OutPipe as Outbound Pipeline
+    participant LLM as 🤖 Model LLM (EOG)
+    participant Out as 🔗 Outbound Chain / Tool Middleware
+    participant Mem as 🧠 PipelineMemento (v1 -> v2)
+    participant Vault as 🛡️ VaultProxy
+    participant Tool as 🗄️ Narzędzie wewnętrzne (np. DB)
+    participant InCoR as 🔗 Inbound CoR
 
-    User->>Middleware: "Kiedy urodził się Jan Kowalski?"
-    Middleware->>InPipe: process(text)
-    InPipe->>Vault: tokenize("Jan Kowalski", PERSON)
-    Vault-->>InPipe: "<PERSON_1>"
-    InPipe->>Vault: create/extend Memento(session_id, <PERSON_1>)
-    InPipe-->>Middleware: prompt + Tool definitions
-    Middleware->>LLM: zanonimizowany prompt + get_birth_date(...)
-    LLM-->>Middleware: ToolCall {name: get_birth_date,\narguments: {user_id: "<PERSON_1>"}}
-
-    Middleware->>ToolMW: intercept(ToolCall)
-    ToolMW->>Vault: de_tokenize("<PERSON_1>", session credentials)
-    Vault-->>ToolMW: "Jan Kowalski"
-    ToolMW->>DB: get_birth_date(user_id="Jan Kowalski")
-    DB-->>ToolMW: "1990-01-01"
-    ToolMW->>Vault: tokenize("1990-01-01", DATE)
-    Vault-->>ToolMW: "<DATE_1>"
-    ToolMW->>Vault: extend Memento(+ <DATE_1>)
-    ToolMW-->>LLM: tool result {birth_date: "<DATE_1>"}
-
-    LLM-->>Middleware: "<PERSON_1> urodził się <DATE_1>"
-    Middleware->>OutPipe: restore(response, expanded Memento)
-    OutPipe->>Vault: de_tokenize("<PERSON_1>", credentials)
-    Vault-->>OutPipe: "Jan Kowalski"
-    OutPipe->>Vault: de_tokenize("<DATE_1>", credentials)
-    Vault-->>OutPipe: "1990-01-01"
-    OutPipe-->>Middleware: "Jan Kowalski urodził się 1990-01-01"
-    Middleware-->>User: pełna odpowiedź
+    LLM-->>Out: ToolCall: get_orders(customer="<PERSON_ALPHA_INST_1>")
+    Out->>Mem: resolve("<PERSON_ALPHA_INST_1>") -> rec_7a1b
+    Out->>Vault: de_tokenize(rec_7a1b, principal)
+    Vault-->>Out: "Jan Kowalski"
+    Out->>Tool: get_orders(customer="Jan Kowalski")
+    Tool-->>InCoR: [{order_id: 42, iban: "PL611090..."}]
+    Note over InCoR: Sanityzacja wyniku narzędzia przed zwrotem do LLM
+    InCoR->>Vault: tokenize("PL611090...", IBAN_PL, session_id)
+    Vault-->>InCoR: rec_9c2d
+    InCoR->>Mem: expand_version(v2, new_cluster=rec_9c2d)
+    InCoR-->>LLM: ToolResult: [{order_id: 42, iban: "<IBAN_PL_1>"}]
 ```
 
-W żadnym momencie LLM nie otrzymuje jawnego identyfikatora osoby, daty urodzenia ani bezpośredniego połączenia z bazą. Wynik narzędzia jest anonimizowany natychmiast po odczycie, a dynamicznie rozszerzone Memento umożliwia atomową de-tokenizację obu tokenów dopiero w `Outbound Pipeline`, po kontroli uprawnień i audycie.
+1. Argumenty `ToolCall` są walidowane pod kątem schematu JSON i de-tokenizowane w zaufanej strefie przez `VaultProxy`.
+2. Narzędzie działa na danych jawnych wyłącznie wewnątrz sieci prywatnej.
+3. Wynik narzędzia wraca przez Inbound CoR, gdzie nowe encje PII są natychmiast tokenizowane, a `PipelineMemento` tworzy nową wersję migawki (`version = v + 1`, *Dynamic Memento Expansion*), zachowując niemutowalność poprzedniej wersji.
 
 ---
 
-## 6. Model bezpieczeństwa
+### 5.7 Wybór providera LLM przez API i obsługa narzędzi deweloperskich
 
-### 6.1 Wykrywanie PII/PHI
+Programista lub system automatyzacji może elastycznie przełączać modele i dostawców:
+```bash
+# Użycie Claude Code z modelami w EOG przez nasz Gateway:
+export ANTHROPIC_BASE_URL="http://gateway:8000/v1"
+export ANTHROPIC_API_KEY="corp-sandbox-token"
+claude "Zrefaktoryzuj moduł fakturowania w pliku src/invoice_service.py"
 
-System stosuje **podejście wielowarstwowe (Multi-Strategy Ensemble Detector)**:
+# Albo bezpośrednie wywołanie API z wyborem Mistral AI:
+curl -X POST http://gateway:8000/v1/chat/completions \
+  -H "Authorization: Bearer corp-token" \
+  -H "X-Target-Provider: mistral-ai" \
+  -d '{"model": "mistral-large", "messages": [{"role": "user", "content": "Przeanalizuj umowę..."}]}'
+```
 
-| Warstwa | Metoda | Przykłady encji |
-|---------|--------|----------------|
-| **Reguły deterministyczne** | Regex + checksum (Luhn, PESEL modulo) | PESEL, NIP, REGON, IBAN, numer dowodu, e-mail |
-| **NER (Named Entity Recognition)** | Transformer-based (np. fine-tuned HerBERT dla PL, Zero-Shot GLiNER) | Imię, nazwisko, adres, organizacja (także odmienione przez przypadki) |
-| **Słowniki i kontekst (Context Enhancers)** | Gazetteers (baza imion/miejscowości) + słowa kluczowe w oknie sąsiedztwa | `"jan kowalski"` (pisane małymi literami), `"pacjent:"`, `"zamieszkały"` |
-| **PHI (dane medyczne)** | HL7/FHIR-aware parser + NER medyczny | Kody ICD-10, nazwy leków, procedury |
-| **Cross-entity correlation** | Graf quasi-identyfikatorów (`ReIdRiskAnalyzer`) | Kombinacje cech demograficznych (wiek + zawód + lokalizacja) |
-
-#### Wykrywanie danych niepodanych wprost i odporność na brak formatowania
-
-Klasyczne wyrażenia regularne nie wykrywają nieustrukturyzowanych nazw własnych, natomiast standardowe modele NER trenowane na czystych korpusach wykazują tzw. *capitalization bias* (spadek pewności detekcji dla tekstu pisanego małymi literami, np. `"jan kowalski"` zamiast `"Jan Kowalski"`). W celu wyeliminowania tej luki `PIIDetector` łączy trzy poziomy analizy:
-
-1. **Poziom A — Brak wielkich liter, fleksja i literówki (`"z janem kowalskim"`, `"ul. lipowa 5"`):**
-   - **Modele Zero-Shot / Transformer NER:** Wykorzystanie modeli analizujących kontekst składniowy zdania (np. wielojęzyczny `GLiNER` lub polskojęzyczny `HerBERT` / `RoBERTa` dotrenowany z *lowercasing augmentation*, gdzie część zbioru treningowego celowo pozbawiono wielkich liter).
-   - **Gazetteers + `ContextRuleEnhancer`:** Jeśli model transformerowy zwróci dla frazy pisanej małymi literami niższą pewność (np. `confidence = 0.45`), warstwa kontekstowa podbija wynik (`+0.20–0.30`), gdy token występuje w słowniku polskich imion/miejscowości lub w sąsiedztwie słów kluczowych (`"klient"`, `"pacjent"`, `"nazywam się"`, `"mgr"`).
-2. **Poziom B — Dane rozbite lub niestandardowo zapisane (`"j. kowalski"`, `"90 01 01 123 45"`):**
-   - Normalizacja wejścia przed detekcją, luźniejsze wzorce regex weryfikowane sumą kontrolną oraz łączenie sąsiadujących encji częściowych.
-3. **Poziom C — Quasi-identyfikatory i re-identyfikacja pośrednia (*"34-letni neurochirurg z Sępólna Krajeńskiego"*):**
-   - Nawet przy braku bezpośrednich identyfikatorów (`PERSON`, `PESEL`) ekstraktor cech przekazuje wykryte atrybuty (`AGE`, `PROFESSION`, `LOCATION`) do `ReIdRiskAnalyzer`, który wymusza uogólnienie wartości przez `GeneralizationStrategy` (patrz §5.4).
-
-#### Bezpieczna obsługa plików PDF i dokumentów (`Extract-Then-Anonymize`)
-
-Przekazanie surowego pliku PDF bezpośrednio do multimodalnego modelu LLM grozi wyciekiem PII na trzech płaszczyznach:
-1. **Metadane pliku (XMP / Info Dictionary):** autor dokumentu, organizacja, nazwa hosta, historia zmian.
-2. **Ukryte warstwy tekstowe:** pozornie zamazany tekst nadal istnieje w drzewie obiektów PDF.
-3. **Osadzone obrazy (skany, pieczątki, podpisy):** Vision LLM potrafi odczytać dane osobowe z pikseli obrazu.
-
-Dlatego dla dokumentów PDF obowiązuje architektura **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**:
-- **Całkowita blokada surowych binariów:** Oryginalny plik PDF nigdy nie jest przekazywany do zewnętrznego API LLM.
-- **Ekstrakcja tekstu i czyszczenie metadanych:** `DocumentExtractorFilter` (np. w oparciu o lokalny parser `PyMuPDF` / `pdfplumber`) wyciąga wyłącznie warstwę tekstową oraz strukturę tabel, odrzucając wszystkie metadane dokumentu, po czym przekazuje czysty tekst do `LanguageDetectorFilter` → `PIIDetectorFilter` → `AnonymizationFilter`.
-- **Polityka dla skanów i obrazów (Fail-Closed vs. Local OCR):** Jeśli PDF nie posiada warstwy tekstowej (jest skanem) lub zawiera osadzone obrazy:
-  - w trybie domyślnym (`STRICT_NO_OCR`) pipeline przerywa przetwarzanie z błędem `UnsupportedMediaWithPotentialPIIError` (`HardStopError`) i rejestruje zdarzenie w `AuditLog`,
-  - w trybie rozszerzonym (`LOCAL_OCR_ENABLED`) obraz jest przetwarzany przez lokalny silnik OCR działający wewnątrz zaufanej granicy (bez dostępu do sieci), a rozpoznany tekst trafia do standardowej detekcji PII.
-
-**Priorytety błędów detekcji:**
-- **False Negative** (niewykrycie PII) = **krytyczne** — dane trafiają do LLM bez ochrony.
-- **False Positive** (nadmierna anonimizacja) = **akceptowalne** — pogarsza jakość odpowiedzi, ale nie narusza prywatności.
-
-Dlatego progi detekcji są celowo **konserwatywne** (wysoka czułość, niższa precyzja).
+1. **Przejęcie żądania w Gateway:** `APIGateway` rozpoznaje żądanie, weryfikuje uprawnienia i buduje potok z `UserPipelineConfig` przez `DynamicCoRFactory`.
+2. **Sanityzacja w łańcuchu CoR:** Wykrywane są sekrety, tokeny `.env` oraz PII (PESEL, NIP, nazwiska) i zastępowane tokenami polimorficznymi.
+3. **Fail-Closed Gate:** W razie jakiegokolwiek błędu (np. próba użycia niedozwolonego modelu poza EOG) zapytanie jest natychmiast odrzucane z kodem HTTP.
+4. **Wysłanie do wybranego providera:** `MultiProviderLLMDispatcher` kieruje zanonimizowaną treść przez `EgressGateway` do wskazanego API (np. Mistral w Paryżu).
+5. **Streaming de-tokenizacji:** Strumień SSE odpowiedzi przechodzi przez `Outbound Chain` (`OutputPIIDetectorHandler` → `WindowBufferingHandler` → `ResponseRestorer`) i jest bezpiecznie zwracany przez `APIGateway` do klienta.
 
 ---
 
-### 6.2 GDPR i EU AI Act
+## 6. Model bezpieczeństwa i przetwarzania danych w Unii Europejskiej
 
-```mermaid
-flowchart LR
-    GDPR["GDPR (EU 2016/679)"] --> A1["Art. 5 - minimalizacja danych"]
-    GDPR --> A2["Art. 17 - prawo do usunięcia - EXPIRE tokens"]
-    GDPR --> A3["Art. 25 - privacy by design"]
-    GDPR --> A4["Art. 32 - bezpieczenstwo - AES-256"]
-    GDPR --> A5["Art. 44-49 - transfer poza EOG - Residency Policy"]
-    A2 --> RetPolicy["RetentionPolicyEngine\n(TTL sesji, np. 24h)"]
-    RetPolicy --> RetWorker["RetentionWorker\n(asynchroniczny purge)"]
-    RetWorker --> TokenDB[("TokenDB:\nusunięcie rekordów tokenów")]
+### 6.1 Wieloformatowa ekstrakcja dokumentów (Extract-Then-Anonymize)
 
-    EUAIA["EU AI Act (EU 2024/1689)"] --> B1["Art. 9 - zarzadzanie ryzykiem - ReIdRiskAnalyzer"]
-    EUAIA --> B2["Art. 10 - jakosc danych - audyt detekcji"]
-    EUAIA --> B3["Annex III - high-risk dla PHI"]
-    EUAIA --> B4["Art. 13 - transparentnosc - AuditLog"]
-```
+Obowiązuje reguła **Extract-Then-Anonymize, Fail-Closed on Raw Binaries**: surowe pliki binarne nigdy nie trafiają do modelu LLM.
 
-**Mapa wymagań regulacyjnych na komponenty:**
-
-| Wymóg | Komponent realizujący |
-|-------|----------------------|
-| Minimalizacja danych | `PIIDetector` + `AnonymizationFilter` |
-| Prawo do usunięcia | `RetentionPolicyEngine` + `VaultCore.expire()` |
-| Privacy by Design | `PipelineBuilder` (anonimizacja obowiązkowa) |
-| Szyfrowanie w transit | TLS 1.3 na wszystkich połączeniach |
-| Szyfrowanie at rest | AES-256-GCM w `VaultCore` |
-| Transfer poza EOG | `ResidencyPolicyEngine` |
-| Ocena ryzyka AI | `ReIdRiskAnalyzer` + dokumentacja modelu |
-| Transparentność | `AuditLog` (niemodyfikowalny) |
-
-**Cykl życia sesji i purge Vaulta:** przy utworzeniu sesji `RetentionPolicyEngine` wyznacza `expires_at` dla każdego `TokenRecord` (domyślnie TTL 24h, konfigurowalny zgodnie z polityką organizacji). Asynchroniczny `RetentionWorker` cyklicznie pobiera rekordy, dla których `expires_at < now()`, i wykonuje atomowe, nieodwracalne usunięcie zaszyfrowanych wartości oraz ich mapowań z `TokenDB` (`Purge`). Operacja jest idempotentna, monitorowana i audytowana bez zapisywania wartości PII. Mechanizm realizuje operacyjne usuwanie danych zgodnie z RODO art. 17; ewentualne wyjątki retencyjne (np. obowiązek prawny) muszą być jawnie oznaczone polityką i nie mogą rozszerzać domyślnego TTL.
+| Format pliku | MIME-Type | Silnik ekstrakcji w piaskownicy | Czyszczenie i sanityzacja | Polityka bezpieczeństwa (Fail-Closed) |
+|---|---|---|---|---|
+| **PDF** | `application/pdf` | `PyMuPDF` / `pdfplumber` | Usunięcie Info Dict, XMP, ukrytych warstw tekstowych | Domyślnie `STRICT_NO_OCR` — **natychmiastowe odrzucenie zapytania (`HardStopError`)**, jeśli dokument jest skanem. W trybie `LOCAL_OCR_ENABLED` lokalny Tesseract OCR. |
+| **DOCX / DOC** | `application/vnd.openxmlformats...` | `python-docx` / lxml parser | Usunięcie `core.xml`, komentarzy, śledzenia zmian | Ekstrakcja czystego tekstu i tabel. Wykrycie makr VBA skutkuje natychmiastowym odrzuceniem dokumentu. |
+| **XLSX / ODS** | `application/vnd.openxmlformats...spreadsheetml` | `openpyxl` (data_only=True) | Odcięcie ukrytych arkuszy, formuł zewnętrznych, stripping EXIF | Pobranie wyłącznie wyliczonych wartości komórek (ochrona przed CSV/Formula Injection). |
+| **CSV / TSV** | `text/csv`, `text/tab-separated-values` | Parser strumieniowy z walidacją dialektu | Sanityzacja prefiksów formuł (`=`, `+`, `-`, `@`) | Walidacja rozmiaru i struktury kolumnowej. |
+| **TXT / MD** | `text/plain`, `text/markdown` | Bezpośredni odczyt UTF-8 | Normalizacja kodowania, obcięcie znaków kontrolnych | Czysty tekst przekazywany bezpośrednio do detekcji PII. |
+| **Obrazy (PNG/JPEG)** | `image/png`, `image/jpeg` | Lokalny silnik OCR (Tesseract / EasyOCR) | Całkowity brak wysyłki pikseli na zewnątrz; stripping EXIF | Dozwolone wyłącznie w trybie `LOCAL_OCR_ENABLED`. W trybie domyślnym odrzucenie z `HardStopError`. |
+| **Archiwa (ZIP/TAR)** | `application/zip`, `application/x-tar` | Izolowany dekompresor | Ochrona przed Zip-Bomb (limit dekompresji, limit zagnieżdżenia) | Wykrycie podejrzanego pliku skutkuje przerwaniem i odrzuceniem całego archiwum. |
 
 ---
 
-### 6.3 Zarządzanie kluczami
+### 6.2 Wykrywanie PII/PHI specyficznych dla Polski i Unii Europejskiej
 
-**Architektura kluczy (hierarchiczna):**
+System skupia się w 100% na identyfikatorach europejskich:
 
-```
-Master Key (MK)
-    ↓ szyfruje
-Key Encryption Keys (KEK) — jeden per klasa danych
-    ↓ szyfruje
-Data Encryption Keys (DEK) — jeden per sesja/batch
-    ↓ szyfruje
-Wartości PII w TokenDB
-```
-
-- **MK** przechowywany w HSM (Hardware Security Module) lub Cloud KMS z FIPS 140-2 Level 3.
-- **KEK** rotowany co 90 dni (lub natychmiastowo przy kompromitacji).
-- **DEK** rotowany per sesja lub co 24h (dla długich sesji).
-- Dostęp do MK wymaga **M-of-N** (np. 3 z 5) autoryzowanych administratorów (Shamir Secret Sharing).
-
----
-
-### 6.4 Ryzyko re-identyfikacji
-
-**Miary używane w systemie:**
-
-| Miara | Opis | Próg alertu |
-|-------|------|-------------|
-| **k-anonimowość** | Minimalna liczba rekordów nieodróżnialnych | k < 5 → generalizacja |
-| **ℓ-różnorodność** | Różnorodność atrybutów wrażliwych w grupie k | ℓ < 3 → dodatkowa ochrona |
-| **t-bliskość** | Rozkład atrybutów wrażliwych ≈ globalny | t > 0.3 → alert |
-| **Uniqueness score** | % unikalnych kombinacji quasi-ID | > 10% → odmowa |
-
-**Źródła danych pomocniczych dla szacowania k:**
-- GUS (Główny Urząd Statystyczny) — dane demograficzne PL
-- OpenStreetMap — gęstość zaludnienia
-- Lokalne modele statystyczne (bez external API w runtime)
+1. **Identyfikatory krajowe (Polska):**
+   - **PESEL:** Pełna weryfikacja poprawności daty, płci oraz cyfry kontrolnej $d_{11}$:  
+     $$\text{Suma} = (1\cdot d_1 + 3\cdot d_2 + 7\cdot d_3 + 9\cdot d_4 + 1\cdot d_5 + 3\cdot d_6 + 7\cdot d_7 + 9\cdot d_8 + 1\cdot d_9 + 3\cdot d_{10}) \pmod{10}$$
+     $$d_{11} = (10 - \text{Suma}) \pmod{10}$$
+   - **NIP:** 10 cyfr z wagami $(6, 5, 7, 2, 3, 4, 5, 6, 7) \pmod{11}$.
+   - **REGON:** 9- i 14-cyfrowe numery z sumami kontrolnymi.
+   - **Dowód Osobisty RP:** 3 litery i 6 cyfr, gdzie 4. znak (pierwsza cyfra) jest cyfrą kontrolną wyznaczaną dla pozostałych 8 znaków z wagami $(7, 3, 1, 7, 3, 1, 7, 3) \pmod{10}$ (równoważnie: suma wszystkich 9 znaków z wagami $(7, 3, 1, 9, 7, 3, 1, 7, 3) \equiv 0 \pmod{10}$).
+   - **Paszport RP:** Seria i numer paszportu polskiego.
+2. **Identyfikatory unijne (UE / EOG):**
+   - **IBAN UE:** Walidacja długości i sumy kontrolnej **Modulo-97** (zgodnie z ISO 13616) dla wszystkich krajów członkowskich UE (PL, DE, FR, IT, ES, itd.).
+   - **VAT-UE / TIN UE:** Europejskie numery identyfikacji podatkowej przedsiębiorstw zgodne z systemem VIES.
+   - **Karta EKUZ / EHIC:** Europejska Karta Ubezpieczenia Zdrowotnego.
+   - **Dokumenty tożsamości eIDAS:** Numery dokumentów tożsamości państw UE zgodne ze standardem ICAO 9303.
+   - **Karty płatnicze:** Numery kart (Visa, Mastercard, Maestro) weryfikowane algorytmem Luhna.
+3. **Modele językowe Transformer NER:**
+   - Dedykowane modele dla języków UE (fine-tuned HerBERT dla języka polskiego, modele wielojęzyczne GLiNER/RoBERTa) z eliminacją *capitalization bias*.
+4. **Context Enhancers:** Słowniki imion i nazwisk polskich, nazewnictwo miejscowości TERYT, słowa kluczowe w oknie kontekstowym (`"zamieszkały"`, `"pacjent"`, `"PESEL"`, `"faktura"`).
 
 ---
 
-### 6.5 Data Residency
+### 6.3 Polityka Fail-Closed — Bezwarunkowe odrzucenie zapytania w razie problemu
 
-**Model decyzyjny:**
+Kluczową zasadą bezpieczeństwa systemu jest **brak domyślnej tolerancji na błędy naruszające prywatność (Zero-Trust Fail-Closed)**:
 
-```
-ResidencyDecision = f(DataClass, EndpointMetadata.region, OrganizationPolicy)
-```
+| Zdarzenie / Problem | Reakcja systemu | Zwracany kod HTTP | Rejestracja w audycie |
+|---|---|---|---|
+| Naruszenie reguły Data Residency (próba wysyłki poza EOG) | Natychmiastowe przerwanie potoku (`ResidencyViolationError`) | **451 Unavailable For Legal Reasons** | `RESIDENCY_VIOLATION_BLOCKED` |
+| Brak uprawnień do de-tokenizacji / zły token sesji | Natychmiastowe odrzucenie zapytania (`UnauthorizedVaultAccessError`) | **403 Forbidden** | `DETOKENIZE_DENIED` |
+| Przekroczenie ryzyka re-identyfikacji ($k < k_{min}$ po generalizacji) | Odrzucenie zapytania (`ReIdentificationRiskError`) | **422 Unprocessable Content** | `RE_IDENTIFICATION_RISK_REJECT` |
+| Dokument ze skanem / obrazem przy `STRICT_NO_OCR` | Odrzucenie zapytania (`UnsupportedMediaWithPotentialPIIError`) | **415 Unsupported Media Type** | `RAW_BINARY_EXTRACTION_BLOCKED` |
+| Uszkodzona suma kontrolna identyfikatora (PESEL / IBAN) | Odrzucenie lub eskalacja do kwarantanny | **400 Bad Request** | `CHECKSUM_VALIDATION_FAILED` |
+| Wygasły token TTL lub klucz w statusie `EXPIRED` / `REVOKED` | Odrzucenie de-tokenizacji (`TokenExpiredError` / `KeyExpiredError`) | **410 Gone** | `TOKEN_OR_KEY_EXPIRED` |
+| Błąd weryfikacji kryptograficznej AAD w Vault (tampering) | Odrzucenie operacji (`VaultIntegrityError`), alert SIEM | **500 Internal Server Error** | `VAULT_INTEGRITY_TAMPERING` |
 
-`ResidencyDecision` przyjmuje wartości `ALLOW`, `WARN` i `BLOCK`. `DeclarativeResidencyPolicyEngine` wyznacza ją na podstawie listy `ResidencyRule` (klasa danych → dozwolone wzorce regionów, np. `eu-*`), wczytywanej z konfiguracji w formacie z §5.3. Region nieobjęty żadną regułą daje `BLOCK` (deny-by-default).
-
-**Macierz decyzji:**
-
-| Klasa danych | Region EU | Region US | Region APAC |
-|-------------|-----------|-----------|-------------|
-| MEDICAL (PHI) | ✅ ALLOW | ❌ BLOCK | ❌ BLOCK |
-| FINANCIAL | ✅ ALLOW | ⚠️ WARN* | ❌ BLOCK |
-| LEGAL | ✅ ALLOW | ⚠️ WARN* | ❌ BLOCK |
-| GENERAL PII | ✅ ALLOW | ✅ ALLOW** | ⚠️ WARN* |
-| ANONYMOUS | ✅ ALLOW | ✅ ALLOW | ✅ ALLOW |
-
-`*` Wymaga dodatkowego uzasadnienia biznesowego i SCCs (Standard Contractual Clauses)  
-`**` Wymaga weryfikacji DPA (Data Processing Agreement) z providerem
-
-**Metadane LLM Provider (przykład konfiguracji):**
-
-```yaml
-providers:
-  - id: openai-eu
-    endpoint: "https://api.openai.azure.com/"
-    region: eu-west-1
-    data_processing_agreement: true
-    certifications: [ISO27001, SOC2]
-
-  - id: openai-us
-    endpoint: "https://api.openai.com/"
-    region: us-east-1
-    data_processing_agreement: false
-```
+W żadnym wypadku system nie podejmuje próby "zgadywania" ani nie przepuszcza niepewnego payloadu do modelu LLM.
 
 ---
 
-### 6.6 Audyt de-tokenizacji
+### 6.4 GDPR i EU AI Act
 
-**Każde zdarzenie de-tokenizacji zapisuje:**
+| Wymóg regulacyjny | Źródło prawa | Implementacja w architekturze |
+|---|---|---|
+| **Privacy by Design & Default** | GDPR Art. 25 | `PipelineBuilder` uniemożliwia uruchomienie łańcucha bez aktywnych filtrów anonimizacji. |
+| **Minimalizacja danych** | GDPR Art. 5(1)(c) | Zastępowanie danych osobowych minimalnymi tokenami polimorficznymi. |
+| **Prawo do usunięcia (retencja)** | GDPR Art. 17 | `RetentionPolicyEngine` wyznacza TTL sesji, po czym `RetentionWorker` usuwa rekordy z `TokenDB`. |
+| **Bezpieczeństwo przetwarzania** | GDPR Art. 32 | Uwierzytelnione szyfrowanie AES-256-GCM, mTLS 1.3, kontrola ról w `VaultProxy`. |
+| **Zakaz transferu poza EOG** | GDPR Art. 44–49 | `ResidencyPolicyHandler` blokuje wyjście ruchu poza granice EOG w trybie fail-closed. |
+| **Ocena ryzyka AI** | EU AI Act Art. 9 | `RiskAssessmentHandler` bada k-anonimowość w oparciu o statystyki demograficzne UE. |
+| **Rejestrowanie zdarzeń** | EU AI Act Art. 12 | Niemodyfikowalny log audytowy WORM z łańcuchem hashy kryptograficznych. |
+
+---
+
+### 6.5 Zarządzanie kluczami i kryptografia
+
+W `VaultCore` zastosowano wyłącznie szyfrowanie uwierzytelnione **AES-256-GCM** w modelu *Envelope Encryption*:
+- **96-bitowy losowy Nonce:** Generowany z `os.urandom(12)` niezależnie dla każdej operacji szyfrowania.
+- **Associated Authenticated Data (AAD):** Wiązanie szyfrogramu z metadanymi kontekstu: `tenant_id || session_id || entity_type`. Każda modyfikacja szyfrogramu, nonce lub AAD powoduje błąd `InvalidTag` opakowywany w `VaultIntegrityError`.
+- **Hierarchia kluczy KMS:** Master Key (MK) w certyfikowanym HSM (FIPS 140-2 Level 3) → Key Encryption Key (KEK) per klasa danych → Data Encryption Key (DEK) per sesja. `VaultCore` przechowuje w `TokenDB` wyłącznie szyfrogramy w strukturze `TokenRecord`:
+  ```python
+  class TokenRecord(BaseModel):
+      model_config = ConfigDict(frozen=True, extra="forbid")
+      record_id: UUID
+      tenant_id: str
+      session_id: str
+      entity_type: EntityType
+      key_id: str            # Wersja klucza DEK/KEK w KMS
+      nonce: bytes           # 12 bajtów (96-bit)
+      ciphertext: bytes      # Szyfrogram AES-256-GCM + 16-bajtowy tag uwierzytelniający
+      created_at: datetime
+      expires_at: datetime   # Wyznaczane przez RetentionPolicyEngine
+  ```
+
+---
+
+### 6.6 Szacowanie k-anonimowości w oparciu o bazy GUS i Eurostat (Offline Baseline)
+
+Potok w runtime **nie wykonuje zapytań sieciowych do API zewnętrznych** (zasada *Zero-Network-Call Runtime*). Dane z Banku Danych Lokalnych (GUS BDL), rejestru TERYT, spisu NSP oraz Eurostat Census Hub są ładowane asynchronicznie przez dedykowanego workera ETL do lokalnego magazynu `PublicDataDemographicsProvider`:
+- Hierarchia TERYT: SIMC (miejscowość) → TERC (gmina → powiat → województwo).
+- Hierarchia Eurostat NUTS: NUTS-3 → NUTS-2 → NUTS-1.
+- Hierarchia zawodów: KZiS (Polska) / ISCO-08 (Eurostat).
+
+Gdy liczność komórki populacyjnej $N_{pop} < k_{min}$ (np. $k < 5$), `RiskAssessmentHandler` nakazuje uogólnienie cech przez `GeneralizationStrategy`.
+
+---
+
+### 6.7 Data residency w EOG — model decyzyjny
+
+$$\text{Decision} = f(\text{DataClass}, \text{TargetEndpoint.region}, \text{TenantPolicy})$$
+
+Wszelkie dane wrażliwe i chronione RODO podlegają twardej regule: **dozwolony jest wyłącznie transfer do regionów należących do Europejskiego Obszaru Gospodarczego (EOG)**. Każdy docelowy endpoint poza EOG skutkuje natychmiastowym przerwaniem z błędem `ResidencyViolationError` i kodem HTTP 451.
+
+---
+
+### 6.8 Audyt kryptograficzny i WORM
+
+Każda operacja tokenizacji, de-tokenizacji, rotacji kluczy oraz każde odrzucenie Fail-Closed generuje niezmienny wpis `AuditEvent` zapisywany w `AuditLog` (WORM):
+- **Algorytm i kanonikalizacja:** `event_hash = SHA-256(previous_hash || canonical_json(payload))`, gdzie `canonical_json` serializuje pola w deterministycznej kolejności kluczy (RFC 8785 / JCS) bez białych znaków.
+- **Rekord początkowy (Genesis):** Pierwszy wpis w łańcuchu dziennym używa ustalonego `previous_hash = "0" * 64` (lub zakotwiczonego hasha zamknięcia poprzedniego dnia).
+- **Weryfikacja integralności:** Audytor lub worker okresowy przelicza łańcuch sekwencyjnie; niezgodność dowolnego `event_hash` wyzwala krytyczny alert w `SIEM`.
+- **Zakaz logowania surowych PII:** Pola `AuditEvent` zawierają wyłącznie `token_id`, `entity_type`, `session_id` i metadane `SecurityPrincipal` — nigdy wartości jawnych PII ani kluczy kryptograficznych.
 
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "DETOKENIZE_SUCCESS | DETOKENIZE_DENIED | DETOKENIZE_ERROR",
-  "timestamp": "2026-10-25T11:13:28Z",
-  "token_id": "<PERSON_1>",
+  "event_id": "c71a3f2b-8a4d-4e91-b93e-2b1928374650",
+  "event_type": "DETOKENIZE_SUCCESS",
+  "timestamp": "2026-11-12T14:30:00Z",
+  "token_id": "<PERSON_ALPHA_INST_1>",
   "entity_type": "PERSON",
-  "requestor": {
-    "service_id": "crm-service-v2",
-    "user_id": "u-12345",
-    "role": "CASE_WORKER",
-    "ip": "10.0.1.42"
+  "session_id": "sess-9912",
+  "principal": {
+    "user_id": "developer_eu_01",
+    "role": "CODE_REVIEWER",
+    "auth_method": "mTLS_JWT"
   },
-  "session_id": "sess-abc-123",
-  "authorization_basis": "GDPR_ART6_1B | LEGITIMATE_INTEREST",
-  "previous_hash": "sha256:...",
-  "event_hash": "sha256:..."
+  "previous_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "event_hash": "5d41402abc4b2a76b9719d911017c592..."
 }
 ```
 
-**Właściwości logu:**
-- **Append-only** — zapis do WORM storage (Write Once Read Many) lub Blockchain-anchored.
-- **Łańcuch hashy** — każdy wpis zawiera hash poprzedniego (`previous_hash`), co uniemożliwia niewidoczne usunięcie wpisów.
-- **Dostęp do logu** — oddzielna rola `AUDIT_READER`, niedostępna dla operatorów pipeline'u.
-- **Retencja logu** — minimum 5 lat (GDPR + EU AI Act).
+---
+
+## 7. Architektura fizyczna i wdrożeniowa
+
+### 7.1 Strefy bezpieczeństwa sieciowego
+
+Architektura opiera się na 5 odizolowanych strefach sieciowych:
+1. **DMZ / Edge Zone:** Publiczny Load Balancer oraz klaster kontenerów **`APIGateway`** (obsługujący routing i adaptery protokołów Anthropic/OpenAI).
+2. **Trusted App Zone:** Kontenery silnika łańcucha Chain of Responsibility, piaskownice ekstrakcji dokumentów (gVisor/nsjail), klaster pamięci podręcznej Redis (dla Memento) oraz wolumen NVMe z lokalną bazą GUS/Eurostat.
+3. **Cryptographic Enclave:** Dedykowana podsieć izolowana z `VaultProxy`, `VaultCore`, bazą PostgreSQL `TokenDB` oraz połączeniem z modułem HSM / Cloud KMS.
+4. **Compliance Zone:** Niezmienne repozytorium WORM (S3 Object Lock w trybie Compliance) i integracja z SIEM.
+5. **Egress Zone:** `Egress Gateway` z twardym filtrowaniem domen i Geo-IP gwarantującym, że ruch nie opuszcza EOG.
 
 ---
 
-## 7. Decyzje architektoniczne (ADR)
+### 7.2 Diagram architektury fizycznej
 
-Pełne rekordy decyzji architektonicznych (zawierające sekcje *Context & Problem*, *Decision*, *Rejected Alternatives*, *Trade-offs & Consequences* oraz *Compliance with Scenarios*) znajdują się w dedykowanym katalogu [`docs/adr/`](docs/adr/README.md):
+```mermaid
+graph TD
+    subgraph Internet["Sieć Publiczna / Środowiska Klienckie"]
+        WebUser["Aplikacje Biznesowe"]
+        DevCli["Developer CLI / Agenci (Claude Code, IDE)"]
+    end
 
-| ID | Tytuł decyzji | Główny wzorzec / mechanizm | Status | Kluczowe uzasadnienie i kompromisy |
-| :--- | :--- | :--- | :--- | :--- |
-| **[ADR-001](docs/adr/001-pipes-and-filters-pipeline.md)** | Synchronous Prompt/Response Sanitization via Pipes & Filters | **Pipes & Filters** | Accepted | Bezstanowe filtry nad niemutowalnym `PipelineContext` zapewniają bezpieczeństwo wątkowe i deterministyczny *fail-closed short-circuiting* (np. `ResidencyPolicyFilter`). |
-| **[ADR-002](docs/adr/002-strategy-pattern-detectors-and-anonymizers.md)** | Pluggable PII Detectors and Anonymization Algorithms via Strategy Pattern | **Strategy** | Accepted | Pełna zgodność z zasadą Open-Closed (OCP): dodanie nowego detektora (np. polski IBAN) lub strategii (maskowanie, tokenizacja, $k$-anonimowość) wymaga zero zmian w klasach `src/pipeline/`. |
-| **[ADR-003](docs/adr/003-pipeline-builder.md)** | Composing Multi-Stage Compliance Pipelines via Fluent Builder | **Builder** | Accepted | Walidacja niezmienników na etapie `.build()` (obecność detektora, powiązanie strategii odwracalnych z `VaultProxy` i `ResponseRestorer`, wymuszenie kanonicznej kolejności filtrów). |
-| **[ADR-004](docs/adr/004-protection-proxy-token-vault.md)** | Access-Controlled Cryptographic Token Vault via Protection Proxy | **Protection Proxy** | Accepted | `VaultProxy` izoluje pakietowo prywatny `VaultCore` (AES-256-GCM + AAD), wymuszając kontrolę RBAC/tenant oraz niezmienny zapis do `AuditWriter` przy każdej próbie dostępu (`GRANTED` i `DENIED`). |
-| **[ADR-005](docs/adr/005-memento-state-restoration.md)** | Encapsulated Request-Scoped State Restoration via Memento Pattern | **Memento** | Accepted | `PipelineMemento` przechowuje wyłącznie hermetyzowane wskaźniki `placeholder -> token_id` oraz wersję klucza (zero jawnego PII poza Vaultem); odtworzenie odpowiedzi zawsze przechodzi przez autoryzację w Proxy. |
-| **[ADR-006](docs/adr/006-streaming-proxy-placeholder-buffering.md)** | Streaming Response Detokenization via Placeholder Window Buffering | **Pipes & Filters (Streaming)** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE pozwala atomowo de-tokenizować placeholdery podzielone między chunkami i skanować wyjście przez `OutputPIIDetector` bez buforowania całej odpowiedzi. |
-| **[ADR-007](docs/adr/007-anonymized-agentic-tool-calling.md)** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie `ToolCall` w middleware, de-tokenizacja argumentów zapytania do DB wewnątrz zaufanej granicy, natychmiastowa tokenizacja wyniku narzędzia i wersjonowane rozszerzenie `PipelineMemento`. |
-| **[ADR-008](docs/adr/008-hybrid-ner-and-context-enhancers.md)** | Hybrid Unstructured PII Detection (Ensemble NER & Context Enhancers) | **Strategy** | Accepted | Połączenie walidatorów regex/checksum, reguł kontekstowych (`ContextRuleEnhancer` niwelujących *capitalization bias*) oraz opcjonalnego adaptera Transformer NER (`HerBERT` / `GLiNER`). |
-| **[ADR-009](docs/adr/009-pdf-extract-then-anonymize.md)** | Extract-Then-Anonymize PDF Processing (Fail-Closed on Raw Binaries) | **Pipes & Filters (Fail-Closed Gate)** | Accepted | Blokada wysyłki surowych plików binarnych PDF do LLM; ekstrakcja czystego tekstu z odrzuceniem metadanych XMP/Info oraz `HardStopError` dla skanów/obrazów przy braku lokalnego OCR. |
+    subgraph DMZ["DMZ / Edge Zone (VPC Public Subnet)"]
+        LoadBalancer["🛡️ Cloud Load Balancer / WAF\n(DDoS Protection, TLS Termination)"]
+        APIGW_Pod["🚪 API Gateway Cluster\n• Native REST Endpoint (/v1/process)\n• OpenAI Compatible Endpoint (/v1/chat/completions)\n• Anthropic Messages Adapter (/v1/messages)\n• AuthN / AuthZ / Rate Limiting"]
+    end
+
+    subgraph AppVPC["Trusted App Zone (VPC Private Subnet 1)"]
+        CoR_Pods["⚙️ Processing Engine Pods\n(Inbound CoR + Outbound Chain: OutputPII, WindowBuffering, ResponseRestorer)"]
+        Sandbox_Pods["📄 Sandboxed Extractor Pods\n(gVisor / nsjail, --net=none)"]
+        Redis_State["🧠 Redis Cluster (TLS 1.3)\n(PipelineMemento Session Cache + RetentionWorker)"]
+        Gus_DB[("🏛️ PublicDataDemographicsProvider\n(Local GUS/Eurostat Read-Only NVMe)")]
+    end
+
+    subgraph VaultVPC["Cryptographic Enclave (VPC Isolated Subnet 2)"]
+        Vault_Pods["🛡️ VaultProxy & VaultCore Pods\n(mTLS Only, Zero Public Route - JEDYNE PROXY W SYSTEMIE)"]
+        Token_DB[("🗄️ PostgreSQL TokenDB\n(AES-256 Storage, Encrypted Tables)")]
+        KMS_Service["🗝️ Dedicated HSM / Cloud KMS\n(FIPS 140-2 Level 3)"]
+    end
+
+    subgraph ComplianceVPC["Audit & SIEM Zone (VPC Private Subnet 3)"]
+        WORM_Storage[("📜 WORM Audit Storage\n(S3 Object Lock / Compliance Mode)")]
+        SIEM_System["🚨 Enterprise SIEM / SOC"]
+    end
+
+    subgraph EgressNet["Egress Control Zone"]
+        Dispatcher_Pod["🔀 MultiProviderLLMDispatcher Pods"]
+        Egress_GW["🚪 EgressGateway\n(Strict EEA Domain & Geo-IP Filtering)"]
+    end
+
+    subgraph ExternalLLM["Dozwolone Modele LLM w EOG"]
+        LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
+        LLM_Azure["☁️ Azure OpenAI (Frankfurt / EOG)"]
+        LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
+        LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
+    end
+
+    WebUser -->|"HTTPS (Port 443)"| LoadBalancer
+    DevCli -->|"HTTPS (Port 443)"| LoadBalancer
+
+    LoadBalancer -->|"Ruch do Gateway"| APIGW_Pod
+    APIGW_Pod <-->|"Internal mTLS (Request / Restored Response)"| CoR_Pods
+    APIGW_Pod -.->|"AuthN/AuthZ Audit Events"| WORM_Storage
+    CoR_Pods <-->|"Extract Tasks (Brak sieci)"| Sandbox_Pods
+    CoR_Pods <-->|"Session State (Memento)"| Redis_State
+    CoR_Pods -.->|"Offline Reads"| Gus_DB
+
+    CoR_Pods <-->|"mTLS Client Cert Auth (Tokenize / De-tokenize)"| Vault_Pods
+    Vault_Pods --> Token_DB
+    Vault_Pods <--> KMS_Service
+
+    Vault_Pods -.->|"Append-Only Audit Stream"| WORM_Storage
+    CoR_Pods -.->|"Pipeline Audit Events / Rejections"| WORM_Storage
+    WORM_Storage --> SIEM_System
+
+    CoR_Pods <-->|"Sanitized Prompts / LLM Response & SSE"| Dispatcher_Pod
+    Dispatcher_Pod <--> Egress_GW
+    Egress_GW <-->|"Zgodne z RODO połączenie EOG"| LLM_Mistral & LLM_Azure & LLM_Claude & LLM_Local
+
+    style DMZ fill:#e1f5fe,stroke:#0288d1
+    style AppVPC fill:#e8f5e9,stroke:#388e3c
+    style VaultVPC fill:#fff3e0,stroke:#f57c00
+    style ComplianceVPC fill:#f3e5f5,stroke:#7b1fa2
+    style EgressNet fill:#ffebee,stroke:#d32f2f
+```
+
+---
+
+### 7.3 Izolacja procesowa i sandboxing parserów
+
+Ekstrakcja dokumentów odbywa się w piaskownicach z wykorzystaniem technologii **gVisor / nsjail**:
+- Parametr `--net=none` (całkowity brak interfejsu sieciowego),
+- Tymczasowy system plików w pamięci `tmpfs`,
+- Limity zasobów pamięci i czasu procesora (ochrona przed Zip-Bomb i atakami na parsery binarne).
+
+---
+
+### 7.4 Macierz komunikacji sieciowej (porty i protokoły)
+
+Wszystkie połączenia międzystrefowe podlegają zasadzie **Default-Deny** (Kubernetes NetworkPolicies / Security Groups):
+
+| Źródło | Cel | Protokół / Port | Uwierzytelnienie |
+|---|---|---|---|
+| Klienci zewnętrzni | `LoadBalancer` / `APIGateway` | HTTPS (TLS 1.3) / `443` | mTLS lub JWT / API Key |
+| `APIGateway` | `Processing Engine Pods` (CoR) | HTTP/2 / gRPC (mTLS) / `8443` | Certyfikat mTLS (SPIFFE/SPIRE) |
+| `Processing Engine Pods` | `Sandboxed Extractor Pods` | Unix Domain Socket / lokalny IPC | Izolacja pod-to-pod (`--net=none`) |
+| `Processing Engine Pods` | `Redis Cluster` (Memento) | RESP3 over TLS 1.3 / `6379` | ACL + mTLS |
+| `Processing Engine Pods` | `VaultProxy` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
+| `VaultCore` | `PostgreSQL TokenDB` | PostgreSQL over TLS 1.3 / `5432` | mTLS + krótkotrwałe poświadczenia |
+| `VaultCore` | `HSM / Cloud KMS` | PKCS#11 / HTTPS (mTLS) / `443` | Certyfikat enklawy + IAM |
+| `APIGateway` / `CoR` / `VaultProxy` | `WORM Audit Storage` | HTTPS (TLS 1.3) / `443` | Uprawnienia wyłącznie `PutObject` (Append-Only) |
+| `Processing Engine Pods` | `MultiProviderLLMDispatcher` | HTTP/2 (mTLS) / `8444` | Certyfikat mTLS |
+| `EgressGateway` | Zewnętrzne API LLM w EOG | HTTPS (TLS 1.3) / `443` | Allowlista domen i zakresów IP EOG |
+
+---
+
+### 7.5 Wysoka dostępność (HA) i zachowanie Fail-Closed przy awarii
+
+Wszystkie warstwy bezstanowe (`APIGateway`, `Processing Engine Pods`, `MultiProviderLLMDispatcher`, `VaultProxy`) są wdrażane w topologii **Multi-AZ** (min. 2 strefy dostępności w obrębie regionu EOG). W przypadku awarii komponentów krytycznych obowiązuje bezwarunkowo polityka **Fail-Closed**:
+- **Niedostępność `VaultProxy` / `KMS` / `TokenDB`:** Potok przerywa przetwarzanie (HTTP 503 Service Unavailable); żaden prompt wymagający tokenizacji nie opuszcza strefy bez anonimizacji.
+- **Niedostępność `WORM Audit Storage`:** Dla klas danych wymagających `AuditLevel.FULL` (w tym `DataClass.MEDICAL`) operacje wrażliwe są wstrzymywane (fail-closed) zamiast kontynuowane bez śladu audytowego.
+- **Niedostępność `Redis Cluster` (Memento):** Sesje z odwracalną tokenizacją zwracają błąd 503 (brak możliwości bezpiecznej rekonstrukcji odpowiedzi); dane jawne nie są buforowane na dysku lokalnym podów.
+
+---
+
+## 8. Decyzje architektoniczne (ADR)
+
+| ID | Tytuł decyzji | Główny wzorzec | Status | Kluczowe uzasadnienie i kompromisy |
+|:---|:---|:---|:---|:---|
+| **ADR-001** | Configurable Request Sanitization via Pure Chain of Responsibility Pattern | **Chain of Responsibility** | Accepted | Rezygnacja z Pipes & Filters na rzecz Chain of Responsibility w celu zapewnienia użytkownikowi pełnej konfigurowalności zestawu i kolejności filtrów oraz bezpośredniej obsługi *fail-closed short-circuit*. |
+| **ADR-002** | Pluggable EU-Specific PII Detectors and Anonymization Algorithms | **Strategy** | Accepted | Zgodność z OCP: dodawanie nowych detektorów dla krajów UE lub strategii maskowania/tokenizacji bez modyfikacji logiki sterującej potoku. |
+| **ADR-003** | Composing Multi-Stage Compliance Chains via Builder with Fail-Closed Invariants | **Builder** | Accepted | Walidacja spójności łańcucha na etapie kompilacji/konfiguracji (wymuszenie obecności detektorów przed anonimizacją, blokada wyłączenia zabezpieczeń dla PHI, twarde odrzucenie zapytania w razie błędu). |
+| **ADR-004** | Access-Controlled Cryptographic Vault via Protection Proxy | **Protection Proxy** | Accepted | Jedyny wzorzec Proxy w systemie: enkapsulacja `VaultCore` za pośrednictwem `VaultProxy`; rygorystyczna autoryzacja RBAC i niezmienny audyt każdej próby de-tokenizacji. |
+| **ADR-005** | State Restoration via Memento with Polymorphic Tokenization | **Memento** | Accepted | Unikalne tokeny dla powtórzeń tego samego podmiotu chronią przed analizą frekwencyjną; metadane koreferencji zapewniają spójność wnioskowania LLM. |
+| **ADR-006** | Streaming Response Detokenization via Window Buffering Handler in CoR | **Streaming Handler** | Accepted | Buforowanie wyłącznie okna nawiasowego `<...>` w strumieniu SSE umożliwia atomową de-tokenizację placeholderów bez naruszania płynności generowania odpowiedzi. |
+| **ADR-007** | Anonymized Agentic Tool Calling & Dynamic Memento Expansion | **Memento + Proxy** | Accepted | Przechwytywanie wywołań narzędzi, de-tokenizacja argumentów w zaufanej strefie, natychmiastowa tokenizacja wyników narzędzia i wersjonowane rozszerzanie Memento. |
+| **ADR-008** | Hybrid Unstructured PII Detection (Ensemble NER & Enhancers) | **Strategy** | Accepted | Połączenie regexów ze sprawdzaniem sum kontrolnych dla identyfikatorów PL/UE, modeli Transformer NER oraz reguł kontekstowych niwelujących *capitalization bias*. |
+| **ADR-009** | Extract-Then-Anonymize Multi-Format Document Processing (Fail-Closed) | **Fail-Closed Gate** | Accepted | Całkowity zakaz wysyłania surowych binariów do LLM; ekstrakcja czystego tekstu w piaskownicy bez dostępu do sieci; blokada i odrzucenie skanów bez lokalnego OCR. |
+| **ADR-010** | Unified Edge API Gateway with Multi-Provider Dispatcher | **Gateway + Dispatcher** | Accepted | API Gateway jako jedyny punkt wejścia na brzegu; eliminacja zbędnego proxy na wejściu; obsługa wyboru dowolnego providera LLM w EOG (Mistral, Azure, Anthropic, vLLM). |
+| **ADR-011** | User-Configurable Chain Execution via Dynamic CoR Factory | **Chain of Responsibility** | Accepted | Dynamiczne składanie łańcucha ogniw w czasie uruchomienia z profilu konfiguracyjnego użytkownika (włączanie/wyłączanie filtrów, parametry, progi). |
+| **ADR-012** | Offline Public Demographic Baselines (GUS & Eurostat) for k-Anonymity | **Offline Data Provider** | Accepted | Obliczanie ryzyka k-anonimowości z wykorzystaniem lokalnie zindeksowanych rejestrów GUS/Eurostat; eliminacja zapytań sieciowych w trakcie przetwarzania promptu. |
+| **ADR-013** | Scoped Polymorphic Entity Tokenization with Coreference Metadata | **Memento + Strategy** | Accepted | Każde wystąpienie danego PII otrzymuje unikalny token instancyjny; wstrzykiwane metadane systemowe gwarantują, że model rozumie relację tożsamości. |
+| **ADR-014** | Multi-Format Document Ingestion in Sandboxed Environment | **Sandboxing + Strategy** | Accepted | Wsparcie dla PDF, DOCX, XLSX, CSV, obrazów (OCR) i archiwów; uruchomienie parserów w kontenerach gVisor/nsjail bez uprawnień sieciowych. |
+
+---
+
+## 9. Ryzyka i otwarte pytania
+
+### 9.1 Zidentyfikowane ryzyka techniczne i operacyjne
+
+1. **Wpływ polimorficznych tokenów na zdolność rozumowania modeli (Reasoning Penalty):**
+   - *Ryzyko:* Mniejsze modele LLM mogą mieć trudności z poprawną interpretacją metadanych koreferencyjnych (`[COREFERENCE: <INST_1> == <INST_2>]`) przy bardzo długich oknach kontekstowych.
+   - *Mitigacja:* Dobór strategii zależny od klasy modelu — dla zaawansowanych modeli (Claude 3.5 Sonnet, GPT-4o) stosowanie pełnej tokenizacji polimorficznej; dla mniejszych modeli opcjonalny fallback do semantycznej syntezy danych (`SynthesisStrategy`), gdzie wstawiane są spójne imiona syntetyczne (np. "Michał Nowak").
+2. **Narost opóźnień (Latency Overhead) przy wieloformatowej ekstrakcji dokumentów:**
+   - *Ryzyko:* Parsowanie dużych arkuszy kalkulacyjnych XLSX lub uruchomienie lokalnego OCR dla wielostronicowych dokumentów PDF wprowadza opóźnienia rzędu sekund.
+   - *Mitigacja:* Asynchroniczne przetwarzanie dokumentów wielostronicowych, optymalizacja silnika Tesseract (wątki CPU, ograniczenie DPI do 300), ścisłe limity rozmiaru załączników na bramie API Gateway (np. max 25 MB).
+3. **Pojemność i świeżość lokalnych baz demograficznych (GUS / Eurostat):**
+   - *Ryzyko:* Dezaktualizacja danych spisowych lub zbyt duży rozmiar wielowymiarowych tabel w pamięci RAM.
+   - *Mitigacja:* Kompresja struktur statystycznych do formatów kolumnowych (DuckDB/Parquet); periodyczna automatyczna aktualizacja wydań rocznych (ETL Worker).
+4. **Złożoność przechwytywania narzędzi agentowych (Tool Calling Drift):**
+   - *Ryzyko:* Zewnętrzne modele mogą generować wywołania narzędzi ze zmienioną strukturą argumentów lub pomijać placeholdery.
+   - *Mitigacja:* Rygorystyczna walidacja schematów JSON w adapterze `APIGateway` przed wykonaniem narzędzia; fail-closed reject w przypadku wykrycia niezgodności tokenów.
+
+---
+
+### 9.2 Podsumowanie kluczowych odpowiedzi architektonicznych
+
+1. **Dlaczego Chain of Responsibility z Builderem całkowicie zastępuje Pipes & Filters?**
+   - Z Pipes & Filters zrezygnowano na rzecz czystego Chain of Responsibility, ponieważ kluczowym wymaganiem jest **dynamiczna konfiguracja zestawu filtrów, detektorów i parametrów przez użytkownika końcowego**.
+   - `PipelineBuilder` waliduje konfigurację użytkownika i buduje łańcuch ogniw CoR.
+   - Każde ogniwo w razie wykrycia problemu (brak sumy kontrolnej, skan bez OCR, naruszenie residency) natychmiast odrzuca zapytanie w trybie **Fail-Closed**.
+2. **API Gateway a Proxy — eliminacja redundancji na wejściu:**
+   - Na brzegu sieci działa **wyłącznie API Gateway** jako centralny punkt wejścia (terminacja TLS, AuthN/AuthZ, rate limiting, adaptery protokołów).
+   - Wzorzec **Proxy** (GoF) ma swoje jedyne miejsce w warstwie kryptograficznej jako **Protection Proxy (`VaultProxy`)**, zabezpieczając dostęp do `VaultCore`.
+3. **Elastyczny wybór providera LLM (Brak vendor lock-in):**
+   - System nie jest sztywno związany z żadnym dostawcą. Poprzez API Gateway i `MultiProviderLLMDispatcher` klient może kierować zanonimizowany ruch do dowolnego modelu działającego w EOG (Azure OpenAI, Mistral AI, Anthropic EU, lokalne vLLM).
