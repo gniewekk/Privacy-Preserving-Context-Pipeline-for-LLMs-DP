@@ -37,7 +37,7 @@
 7. [Architektura fizyczna i wdrożeniowa](#7-architektura-fizyczna-i-wdrożeniowa)
    - 7.1 [Strefy bezpieczeństwa sieciowego (Zero Trust Network Architecture)](#71-strefy-bezpieczeństwa-sieciowego)
    - 7.2 [Diagram architektury fizycznej (Deployment Topology)](#72-diagram-architektury-fizycznej)
-   - 7.3 [Izolacja procesowa i sandboxing parserów](#73-izolacja-procesowa-i-sandboxing-parserów)
+   - 7.3 [Izolacja procesowa, pule węzłów i sandboxing parserów](#73-izolacja-procesowa-pule-węzłów-i-sandboxing-parserów)
    - 7.4 [Macierz komunikacji sieciowej (porty i protokoły)](#74-macierz-komunikacji-sieciowej-porty-i-protokoły)
    - 7.5 [Wysoka dostępność (HA) i zachowanie Fail-Closed przy awarii](#75-wysoka-dostępność-ha-i-zachowanie-fail-closed-przy-awarii)
 8. [Decyzje architektoniczne (ADR)](#8-decyzje-architektoniczne-adr)
@@ -66,101 +66,110 @@ System gwarantuje, że dane podlegające RODO nie opuszczą Europejskiego Obszar
 
 ## 2. Widok wysokiego poziomu
 
-Architektura systemu rozdziela wejście brzegowe (API Gateway), konfigurowalny łańcuch CoR, dyspozytora modeli w EOG oraz enklawę kryptograficzną z VaultProxy:
+Sekcja przedstawia **architekturę logiczną** systemu — dekompozycję na warstwy funkcjonalne, role komponentów, wzorce projektowe oraz przepływ danych i sterowania w oderwaniu od topologii sieciowej, konteneryzacji, portów, protokołów transportowych i konkretnych dostawców chmurowych (te opisuje [Sekcja 7: Architektura fizyczna i wdrożeniowa](#7-architektura-fizyczna-i-wdrożeniowa)).
 
 ```mermaid
 flowchart TD
     Client["🖥️ Klienci: Aplikacje biznesowe / SDK"]
-    WebUI["💬 Prosty Web Chat / Aplikacja Desktopowa\n(Zero-Config dla nietechnicznych: SSO, lista modeli, Drag & Drop)"]
-    DevCli["💻 Klienci CLI / Agenci (Claude Code, IDE)"]
-    
-    subgraph EdgeLayer["🌐 Warstwa Brzegowa (Edge Zone)"]
-        APIGW["🚪 API Gateway (Jedyny punkt wejścia)\n• Terminacja mTLS / TLS 1.3\n• AuthN (SSO OIDC/SAML, JWT, API Key) & RBAC AuthZ\n• Rate Limiting & DoS Shield\n• Wybór providera (Header / provider/model / Profil)\n• Tryby Połącz LLM & Połącz Agenta: /v1/process, /v1/chat/completions, /v1/messages"]
+    WebUI["💬 Aplikacja czatu / Desktop"]
+    DevCli["💻 Klienci CLI / Agenci programistyczni"]
+
+    subgraph AccessLayer["🚪 Warstwa Dostępu i Adaptacji Protokołów"]
+        APIGW["APIGateway (Jedyny punkt wejścia)\n• Uwierzytelnianie (AuthN) i autoryzacja (AuthZ)\n• Ograniczanie ruchu (Rate Limiting)\n• Adaptacja protokołów klienckich i kanoniczny model żądania\n• Rozwiązywanie docelowego profilu i modelu"]
     end
 
-    subgraph UserConfig["⚙️ Warstwa Konfiguracji Użytkownika"]
-        ConfigMgr["🎛️ User Chain Configuration\n(Wybór filtrów, detektorów, progów i docelowego LLM)"]
+    subgraph ConfigLayer["⚙️ Warstwa Konfiguracji i Fabrykacji"]
+        ConfigMgr["UserPipelineConfig\n(Profil filtrów, detektorów, progów i modelu)"]
+        CoRFactory["DynamicCoRFactory + PipelineBuilder\n(Składanie łańcucha i walidacja niezmienników)"]
     end
 
-    subgraph PipelineCore["⚙️ Łańcuch Przetwarzania (Chain of Responsibility)"]
-        CoRPipeline["🔗 Konfigurowalny Łańcuch Ogniw CoR (składany przez Builder)"]
-        MultiDoc["📄 DocumentExtractorHandler\n(PDF, DOCX, XLSX, wszystkie formaty tekstowe, OCR)"]
-        LangHandler["🌐 LanguageDetectorHandler"]
-        PIIHandler["🔍 PIIDetectorHandler\n(Dobór detektorów ze Strategy)"]
-        RiskHandler["📊 RiskAssessmentHandler\n(k-Anonymity + GUS/Eurostat)"]
-        AnonHandler["🎭 AnonymizationHandler\n(Session-Scoped Random Tokenization)"]
-        ResidencyHandler["🌍 ResidencyPolicyHandler\n(Strict EEA Geo-Fence Gate)"]
-        AuditHandler["📋 AuditContextHandler"]
+    subgraph InboundLayer["🔗 Warstwa Przetwarzania Wejściowego (Inbound CoR)"]
+        MultiDoc["DocumentExtractorHandler\n(Ekstrakcja treści przez DocumentExtractorStrategy)"]
+        LangHandler["LanguageDetectorHandler\n(Detekcja języka)"]
+        PIIHandler["PIIDetectorHandler\n(Detekcja PII/PHI przez PIIDetector)"]
+        RiskHandler["RiskAssessmentHandler\n(Ocena k-anonimowości i ryzyka re-identyfikacji)"]
+        AnonHandler["AnonymizationHandler\n(Dobór strategii przez StrategySelector i pseudonimizacja)"]
+        ResidencyHandler["ResidencyPolicyHandler\n(Bramka zgodności jurysdykcyjnej EOG)"]
+        AuditHandler["AuditContextHandler\n(Domknięcie kontekstu audytowego wejścia)"]
+        DemoProvider["PublicDataDemographicsProvider\n(Lokalne statystyki demograficzne)"]
+        ResPolicy["ResidencyPolicyEngine\n(Reguły rezydencji danych)"]
     end
 
-    subgraph StateAndVault["🔐 Enklawa Bezpieczeństwa (Cryptographic Enclave)"]
-        MementoMgr["🧠 PipelineMemento\n(Session Alias Registry)"]
-        VaultProxy["🛡️ VaultProxy (Protection Proxy - jedyne proxy w systemie)"]
-        VaultCore["🔑 VaultCore (AES-256-GCM)"]
-        TokenDB[("🗄️ Encrypted TokenDB")]
-        KMS["🗝️ Key Management Service (KMS)"]
+    subgraph StateLayer["🧠 Warstwa Stanu Sesji i Retencji"]
+        MementoMgr["PipelineMemento\n(Rejestr klastrów koreferencyjnych i aliasów sesji)"]
+        RetentionMgr["RetentionPolicyEngine / RetentionWorker\n(Cykl życia i wygasanie stanu sesji)"]
     end
 
-    subgraph DispatcherAndLLM["🤖 Dyspozytor Modeli (Egress Zone)"]
-        Dispatcher["🔀 MultiProviderLLMDispatcher\n(Wybór providera w EOG zdefiniowanego w żądaniu)"]
-        EgressGW["🚪 EgressGateway (Strict EEA Geo-Fence)"]
-        LLM_Azure["☁️ ChatGPT / Azure OpenAI (Region EU)"]
-        LLM_Gemini["☁️ Google Gemini (Vertex AI EOG)"]
-        LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
-        LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
-        LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
+    subgraph VaultLayer["🔐 Warstwa Ochrony Kryptograficznej (Vault)"]
+        VaultProxy["VaultProxy (Jedyne Protection Proxy)\n• Kontrola dostępu (RBAC/ABAC) i audyt użycia"]
+        VaultCore["VaultCore\n• Szyfrowanie / deszyfrowanie wartości PII"]
+        TokenDB[("TokenDB\n(Repozytorium zaszyfrowanych rekordów)")]
+        KMS["KMS\n(Hierarchia i rotacja kluczy)"]
     end
 
-    subgraph OutboundCore["⚙️ Łańcuch Rekonstrukcji (Outbound Chain)"]
-        OutChain["🔗 Outbound Chain (Chain of Responsibility)"]
-        OutPII["🔍 OutputPIIDetectorHandler\n(Wykrywanie wycieków PII z LLM)"]
-        WinBuf["🪟 WindowBufferingHandler\n(Buforowanie okien <...> w SSE)"]
-        Restorer["🔓 ResponseRestorer (Memento + VaultProxy)"]
+    subgraph ToolAndDispatchLayer["🤖 Warstwa Narzędzi i Dyspozycji Modeli"]
+        ToolMW["ToolExecutionMiddleware\n(De-tokenizacja argumentów, wykonanie narzędzi, sanityzacja wyników)"]
+        InternalTools[("Wewnętrzne Narzędzia / Źródła Danych")]
+        Dispatcher["MultiProviderLLMDispatcher\n(Orkiestracja wywołania przez LLMProviderAdapter)"]
+        LLMAdapter["LLMProviderAdapter (Abstrakcja dostawców LLM w EOG)"]
     end
 
-    subgraph AuditZone["📜 Warstwa Zgodności (Compliance Zone)"]
-        AuditLog["📋 Append-Only WORM Audit Log (Hash-Chained)"]
-        SIEM["🚨 SIEM / SOC Alerting"]
+    subgraph OutboundLayer["🔄 Warstwa Rekonstrukcji Wyjścia (Outbound CoR)"]
+        OutPII["OutputPIIDetectorHandler\n(Wykrywanie nieoczekiwanych wycieków PII z modelu)"]
+        WinBuf["WindowBufferingHandler\n(Atomowe buforowanie tokenów w strumieniu)"]
+        Restorer["ResponseRestorer\n(Odtwarzanie oryginalnych wartości)"]
     end
 
-    Client -->|"Natywne żądanie REST"| APIGW
-    WebUI -->|"HTTPS / SSO (wybór modelu z listy)"| APIGW
-    DevCli -->|"Żądanie CLI / API"| APIGW
-    
-    ConfigMgr -.->|"DynamicCoRFactory + PipelineBuilder"| CoRPipeline
+    subgraph AuditLayer["📜 Warstwa Zgodności i Audytu"]
+        AuditLog["AuditWriter / AuditLog\n(Niemodyfikowalny rejestr zdarzeń)"]
+        SIEM["SIEM\n(Alertowanie bezpieczeństwa)"]
+    end
 
-    APIGW -->|"Ustandaryzowany PipelineContext"| CoRPipeline
-    APIGW -.->|"Audit odrzuceń AuthN/AuthZ"| AuditLog
-    CoRPipeline --> MultiDoc --> LangHandler --> PIIHandler --> RiskHandler --> AnonHandler --> ResidencyHandler --> AuditHandler
+    Client & WebUI & DevCli -->|"Żądania klienckie"| APIGW
 
-    CoRPipeline -.->|"Błąd / Naruszenie: FAIL-CLOSED REJECT"| AuditLog
-    CoRPipeline -.->|"Odrzucenie z kodem błędu HTTP"| APIGW
+    ConfigMgr --> CoRFactory
+    CoRFactory -.->|"Buduje łańcuchy In/Out (Fail-Closed)"| MultiDoc
 
-    AnonHandler <-->|"Rejestracja tokenów & klastrów"| MementoMgr
-    AnonHandler <-->|"Szyfrowanie wartości PII"| VaultProxy
+    APIGW -->|"PipelineContext"| MultiDoc
+    APIGW -.->|"Zdarzenia AuthN/AuthZ"| AuditLog
+
+    MultiDoc --> LangHandler --> PIIHandler --> RiskHandler --> AnonHandler --> ResidencyHandler --> AuditHandler
+    RiskHandler <-.->|"Kwerendy offline"| DemoProvider
+    ResidencyHandler <-.->|"Ocena jurysdykcji"| ResPolicy
+
+    MultiDoc & RiskHandler & AnonHandler & ResidencyHandler -.->|"Naruszenie: FAIL-CLOSED"| AuditLog
+    MultiDoc & RiskHandler & AnonHandler & ResidencyHandler -.->|"Odrzucenie żądania"| APIGW
+
+    AnonHandler <-->|"Rejestracja klastrów i aliasów"| MementoMgr
+    AnonHandler <-->|"Tokenizacja PII"| VaultProxy
+    RetentionMgr -.->|"Czyszczenie po TTL"| MementoMgr & TokenDB
     VaultProxy --> VaultCore --> TokenDB
     VaultCore <--> KMS
-    VaultProxy -.->|"Audit każdego dostępu"| AuditLog
+    VaultProxy -.->|"Audyt każdego dostępu"| AuditLog
 
     AuditHandler --> Dispatcher
-    Dispatcher --> EgressGW
-    EgressGW --> LLM_Azure & LLM_Gemini & LLM_Mistral & LLM_Claude & LLM_Local
+    AuditHandler -.->|"Audyt wejścia"| AuditLog
+    Dispatcher --> LLMAdapter
+    LLMAdapter -->|"Odpowiedź / Wywołania narzędzi"| OutPII
 
-    LLM_Azure & LLM_Gemini & LLM_Mistral & LLM_Claude & LLM_Local -->|"Odpowiedź / Strumień SSE"| OutChain
-    OutChain --> OutPII --> WinBuf --> Restorer
-    Restorer <-->|"Mapowanie aliasów sesyjnych"| MementoMgr
+    Dispatcher <-->|"Agentic ToolCall / ToolResult"| ToolMW
+    ToolMW <-->|"Dynamic Memento Expansion"| MementoMgr
+    ToolMW <-->|"Autoryzowana de-tokenizacja / tokenizacja"| VaultProxy
+    ToolMW <-->|"Wykonanie na jawnych danych"| InternalTools
+
+    OutPII --> WinBuf --> Restorer
+    Restorer <-->|"Mapowanie aliasów"| MementoMgr
     Restorer <-->|"Autoryzowana de-tokenizacja"| VaultProxy
-    AuditLog --> SIEM
     Restorer --> APIGW
-    APIGW -->|"Odtworzona odpowiedź / Strumień"| Client
-    APIGW -->|"Odtworzona odpowiedź w czacie"| WebUI
-    APIGW -->|"Odtworzony strumień SSE"| DevCli
+    AuditLog --> SIEM
+    APIGW -->|"Odtworzona odpowiedź"| Client & WebUI & DevCli
 
-    style EdgeLayer fill:#e1f5fe,stroke:#0288d1
-    style UserConfig fill:#e8eaf6,stroke:#3f51b5
-    style StateAndVault fill:#fff3e0,stroke:#f57c00
-    style AuditZone fill:#f3e5f5,stroke:#7b1fa2
-    style DispatcherAndLLM fill:#e8f5e9,stroke:#388e3c
+    style AccessLayer fill:#e1f5fe,stroke:#0288d1
+    style ConfigLayer fill:#e8eaf6,stroke:#3f51b5
+    style StateLayer fill:#ede7f6,stroke:#5e35b1
+    style VaultLayer fill:#fff3e0,stroke:#f57c00
+    style AuditLayer fill:#f3e5f5,stroke:#7b1fa2
+    style ToolAndDispatchLayer fill:#e8f5e9,stroke:#388e3c
 ```
 
 ---
@@ -791,16 +800,17 @@ graph TD
     end
 
     subgraph AppVPC["Trusted App Zone (VPC Private Subnet 1)"]
-        CoR_Pods["⚙️ Processing Engine Pods\n(Inbound CoR + Outbound Chain: OutputPII, WindowBuffering, ResponseRestorer)"]
-        Tool_Middleware["🔧 ToolExecutionMiddleware\n(De-tokenizacja argumentów ToolCall, wykonanie narzędzi, sanitacja wyników)"]
+        CoR_Pods["⚙️ Processing Engine Pods\n(Runtime Inbound/Outbound CoR + Factory/Builder)"]
+        Config_Store[("🗄️ Config Store\n(PostgreSQL / K8s ConfigMaps: Profile konfiguracji)")]
+        Tool_Pods["🔧 Tool Execution Service Pods\n(Izolowany runtime wywołań narzędzi)"]
         Internal_Tools[("🗄️ Wewnętrzne Narzędzia / DB\n(Tylko strefa zaufana)")]
-        Sandbox_Pods["📄 Sandboxed Extractor Pods\n(gVisor / nsjail, --net=none)"]
-        Redis_State["🧠 Redis Cluster (TLS 1.3)\n(PipelineMemento Session Cache + RetentionWorker)"]
-        Gus_DB[("🏛️ PublicDataDemographicsProvider\n(Local GUS/Eurostat Read-Only NVMe)")]
+        Sandbox_Pods["📄 Sandboxed Extractor Pods\n(gVisor / nsjail, --net=none, tmpfs)"]
+        Redis_State["🧠 Redis Cluster (TLS 1.3)\n(Sesyjny cache stanu + worker retencji)"]
+        Gus_DB[("🏛️ Demographics Read-Only NVMe\n(Lokalne zindeksowane bazy GUS / Eurostat)")]
     end
 
     subgraph VaultVPC["Cryptographic Enclave (VPC Isolated Subnet 2)"]
-        Vault_Pods["🛡️ VaultProxy & VaultCore Pods\n(mTLS Only, Zero Public Route)"]
+        Vault_Pods["🛡️ Vault Service Pods\n(mTLS Only, Zero Public Route)"]
         Token_DB[("🗄️ PostgreSQL TokenDB\n(AES-256 Storage, Encrypted Tables)")]
         KMS_Service["🗝️ Dedicated HSM / Cloud KMS\n(FIPS 140-2 Level 3)"]
     end
@@ -811,7 +821,7 @@ graph TD
     end
 
     subgraph EgressNet["Egress Control Zone"]
-        Dispatcher_Pod["🔀 MultiProviderLLMDispatcher Pods"]
+        Dispatcher_Pod["🔀 LLM Dispatcher Pods"]
         Egress_GW["🚪 EgressGateway\n(Strict EEA Domain & Geo-IP Filtering)"]
     end
 
@@ -820,7 +830,7 @@ graph TD
         LLM_Azure["☁️ ChatGPT / Azure OpenAI (Frankfurt / EOG)"]
         LLM_Claude["☁️ Anthropic Claude (Region EOG)"]
         LLM_Mistral["☁️ Mistral AI (Paryż / EOG)"]
-        LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise)"]
+        LLM_Local["🖥️ Lokalne vLLM / Ollama (On-Premise GPU Node)"]
     end
 
     WebUser -->|"HTTPS (Port 443)"| LoadBalancer
@@ -831,13 +841,14 @@ graph TD
     APIGW_Pod <-->|"Weryfikacja tokenów OIDC / SAML"| CorpIdP
     APIGW_Pod <-->|"Internal mTLS (Request / Restored Response)"| CoR_Pods
     APIGW_Pod -.->|"AuthN/AuthZ Audit Events"| WORM_Storage
+    CoR_Pods -.->|"Odczyt profili konfiguracji"| Config_Store
     CoR_Pods <-->|"Extract Tasks (Brak sieci)"| Sandbox_Pods
-    CoR_Pods <-->|"Session State (Memento)"| Redis_State
-    CoR_Pods -.->|"Offline Reads"| Gus_DB
-    CoR_Pods <-->|"Agentic ToolCall / Sanitized ToolResult"| Tool_Middleware
-    Tool_Middleware <-->|"Dynamic Memento Expansion"| Redis_State
-    Tool_Middleware <-->|"mTLS De-tokenize / Tokenize"| Vault_Pods
-    Tool_Middleware <-->|"Zapytania na jawnych danych"| Internal_Tools
+    CoR_Pods <-->|"Session State (TLS 1.3)"| Redis_State
+    CoR_Pods -.->|"Offline NVMe Reads"| Gus_DB
+    CoR_Pods <-->|"mTLS ToolCall / Sanitized ToolResult"| Tool_Pods
+    Tool_Pods <-->|"Session State Expansion"| Redis_State
+    Tool_Pods <-->|"mTLS De-tokenize / Tokenize"| Vault_Pods
+    Tool_Pods <-->|"Zapytania na jawnych danych"| Internal_Tools
 
     CoR_Pods <-->|"mTLS Client Cert Auth (Tokenize / De-tokenize)"| Vault_Pods
     Vault_Pods --> Token_DB
@@ -860,12 +871,13 @@ graph TD
 
 ---
 
-### 7.3 Izolacja procesowa i sandboxing parserów
+### 7.3 Izolacja procesowa, pule węzłów i sandboxing parserów
 
-Ekstrakcja dokumentów odbywa się w piaskownicach z wykorzystaniem technologii **gVisor / nsjail**:
-- Parametr `--net=none` (całkowity brak interfejsu sieciowego),
-- Tymczasowy system plików w pamięci `tmpfs`,
-- Limity zasobów pamięci i czasu procesora (ochrona przed Zip-Bomb i atakami na parsery binarne).
+Infrastruktura obliczeniowa jest podzielona na dedykowane pule węzłów (Node Pools) w obrębie klastra Kubernetes w regionie EOG:
+- **General Compute Pool (Multi-AZ):** bezstanowe pody `API Gateway Cluster`, `Processing Engine Pods` (opcjonalnie z węzłami CPU/GPU dla lokalnego NER `HerBERT` / `GLiNER` oraz lokalnego OCR), `Tool Execution Service Pods` oraz `LLM Dispatcher Pods`.
+- **Sandboxed Extractor Pool (`gVisor / nsjail`):** izolowane węzły robocze z parametrem `--net=none` (całkowity brak interfejsu sieciowego), tymczasowym systemem plików w pamięci `tmpfs` oraz ścisłymi limitami pamięci i czasu procesora (ochrona przed Zip-Bomb i atakami na parsery binarne).
+- **Cryptographic Enclave Pool:** dedykowane, utwardzone węzły w izolowanej podsieci dla `Vault Service Pods` i `PostgreSQL TokenDB`, bez dostępu do internetu i z wyłączonym ruchem wychodzącym poza HSM/KMS oraz WORM Audit.
+- **Local Inference Pool (opcjonalnie On-Premise):** węzły GPU dla lokalnych modeli `vLLM / Ollama` w wariantach bez chmury zewnętrznej.
 
 ---
 
@@ -875,20 +887,23 @@ Wszystkie połączenia międzystrefowe podlegają zasadzie **Default-Deny** (Kub
 
 | Źródło | Cel | Protokół / Port | Uwierzytelnienie |
 |---|---|---|---|
-| Klienci zewnętrzni / `Web Chat` | `LoadBalancer` / `APIGateway` | HTTPS (TLS 1.3) / `443` | mTLS, OIDC/SSO lub JWT / API Key |
-| `APIGateway` | `Firmowy IdP / SSO` | HTTPS (TLS 1.3) / `443` | OIDC / SAML (JWKS) |
-| `APIGateway` | `Processing Engine Pods` (CoR) | HTTP/2 / gRPC (mTLS) / `8443` | Certyfikat mTLS (SPIFFE/SPIRE) |
+| Klienci zewnętrzni / `Web Chat` | `LoadBalancer` / `API Gateway Cluster` | HTTPS (TLS 1.3) / `443` | mTLS, OIDC/SSO lub JWT / API Key |
+| `API Gateway Cluster` | `Firmowy IdP / SSO` | HTTPS (TLS 1.3) / `443` | OIDC / SAML (JWKS) |
+| `API Gateway Cluster` | `Processing Engine Pods` | HTTP/2 / gRPC (mTLS) / `8443` | Certyfikat mTLS (SPIFFE/SPIRE) |
+| `Processing Engine Pods` | `Config Store` | PostgreSQL over TLS 1.3 / `5432` (lub K8s API) | mTLS / ServiceAccount RBAC |
 | `Processing Engine Pods` | `Sandboxed Extractor Pods` | Unix Domain Socket / lokalny IPC | Izolacja pod-to-pod (`--net=none`) |
-| `Processing Engine Pods` | `Redis Cluster` (Memento) | RESP3 over TLS 1.3 / `6379` | ACL + mTLS |
-| `Processing Engine Pods` | `VaultProxy` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
-| `ToolExecutionMiddleware` | `Redis Cluster` (Memento) | RESP3 over TLS 1.3 / `6379` | ACL + mTLS (*Dynamic Memento Expansion*) |
-| `ToolExecutionMiddleware` | `VaultProxy` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
-| `ToolExecutionMiddleware` | `Wewnętrzne Narzędzia / DB` | TLS 1.3 / mTLS (wewnętrzny) | Certyfikat mTLS + izolacja `Trusted App Zone` |
-| `VaultCore` | `PostgreSQL TokenDB` | PostgreSQL over TLS 1.3 / `5432` | mTLS + krótkotrwałe poświadczenia |
-| `VaultCore` | `HSM / Cloud KMS` | PKCS#11 / HTTPS (mTLS) / `443` | Certyfikat enklawy + IAM |
-| `APIGateway` / `CoR` / `VaultProxy` | `WORM Audit Storage` | HTTPS (TLS 1.3) / `443` | Uprawnienia wyłącznie `PutObject` (Append-Only) |
-| `Processing Engine Pods` | `MultiProviderLLMDispatcher` | HTTP/2 (mTLS) / `8444` (dwukierunkowo: prompt, `tool_calls`, SSE) | Certyfikat mTLS |
-| `MultiProviderLLMDispatcher` | `EgressGateway` | HTTP/2 (mTLS) / `8445` | Certyfikat mTLS |
+| `Processing Engine Pods` | `Demographics Read-Only NVMe` | Lokalny montaż wolumenu (Read-Only FS) | Uprawnienia systemu plików (RO) |
+| `Processing Engine Pods` | `Redis Cluster` | RESP3 over TLS 1.3 / `6379` | ACL + mTLS |
+| `Processing Engine Pods` | `Vault Service Pods` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
+| `Processing Engine Pods` | `Tool Execution Service Pods` | gRPC (mTLS) / `8446` | Certyfikat mTLS (SPIFFE/SPIRE) |
+| `Tool Execution Service Pods` | `Redis Cluster` | RESP3 over TLS 1.3 / `6379` | ACL + mTLS |
+| `Tool Execution Service Pods` | `Vault Service Pods` | gRPC (mTLS) / `9443` | mTLS Client Cert + `SecurityPrincipal` |
+| `Tool Execution Service Pods` | `Wewnętrzne Narzędzia / DB` | TLS 1.3 / mTLS (wewnętrzny) | Certyfikat mTLS + izolacja `Trusted App Zone` |
+| `Vault Service Pods` | `PostgreSQL TokenDB` | PostgreSQL over TLS 1.3 / `5432` | mTLS + krótkotrwałe poświadczenia |
+| `Vault Service Pods` | `HSM / Cloud KMS` | PKCS#11 / HTTPS (mTLS) / `443` | Certyfikat enklawy + IAM |
+| `API Gateway` / `Processing Engine` / `Vault` | `WORM Audit Storage` | HTTPS (TLS 1.3) / `443` | Uprawnienia wyłącznie `PutObject` (Append-Only) |
+| `Processing Engine Pods` | `LLM Dispatcher Pods` | HTTP/2 (mTLS) / `8444` (dwukierunkowo: prompt, `tool_calls`, SSE) | Certyfikat mTLS |
+| `LLM Dispatcher Pods` | `EgressGateway` | HTTP/2 (mTLS) / `8445` | Certyfikat mTLS |
 | `EgressGateway` | Zewnętrzne API LLM w EOG | HTTPS (TLS 1.3) / `443` | Allowlista domen i zakresów IP EOG |
 
 ---
